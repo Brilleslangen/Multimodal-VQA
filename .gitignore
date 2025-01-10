@@ -1,0 +1,13 @@
+.idea
+/venv
+*.csv
+wandb
+/finetuning/__pycache__
+__pycache__
+*/__pycache__/*
+*/.ipynb_checkpoints/*
+*/.pytest_cache/*
+*/.mypy_cache/*
+*/.jupyter/*
+*/.vscode/*
+*/.idea/*
