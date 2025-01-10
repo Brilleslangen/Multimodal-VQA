@@ -12,7 +12,7 @@ def select_device():
         return torch.device("cpu")
 
 
-def load_dataset(dataset_id, test_size=0.001, image_size=(224, 224)) -> (DatasetDict, int):
+def load_dataset(dataset_id, test_size=0.005, image_size=(224, 224)) -> (DatasetDict, int):
     """
     Loads a dataset from a CSV file, preprocesses it, and splits it into training and test sets.
 

@@ -16,6 +16,11 @@ from peft import get_peft_model, LoraConfig
 from helpers import load_dataset, select_device
 
 
+def preprocess_logits_for_metrics(logits, labels):
+    pred_ids = torch.argmax(logits[0], dim=-1)
+    return pred_ids, labels
+
+
 class FineTuner:
     def __init__(self, model_id: str, freeze_vision: bool, lora: bool, dataset_id: str, image_size,
                  output_folder: str,
@@ -40,7 +45,6 @@ class FineTuner:
         # Tokenizer, model and trainer
         self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora)
         self.processor = PaliGemmaProcessor.from_pretrained(model_id)
-        self.collator = DataCollatorWithPadding(self.processor.tokenizer, padding=True)
         self.trainer = self.init_trainer()
 
         # Initialize training logger
@@ -57,23 +61,22 @@ class FineTuner:
 
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
-        predictions, labels = eval_pred
-        predictions = self.processor.tokenizer.batch_decode(
-            np.argmax(predictions[0], axis=-1), skip_special_tokens=False)
+        label_ids = eval_pred.label_ids
+        pred_ids = eval_pred.predictions[0]
+
+        pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
+        predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
 
         # Cut off from first eos token with regex
         predictions = [re.match(r'^(.*?)<eos>', p).group(1).strip()
                        if '<eos>' in p else p.strip() for p in predictions]
 
         # Convert label input_ids to text
-        labels = np.where(labels != -100, labels, self.processor.tokenizer.pad_token_id)
-        labels = self.processor.tokenizer.batch_decode(labels, skip_special_tokens=True)
+        label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
+        labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
 
         correct = sum([p == l for p, l in zip(predictions, labels)])
         accuracy = correct / len(predictions)
-
-        print(f"Predictions: {predictions}")
-        print(f"Labels: {labels}")
 
         return {"accuracy": accuracy}
 
@@ -116,6 +119,7 @@ class FineTuner:
             eval_dataset=self.dataset['test'],
             data_collator=self.collate_fn,
             compute_metrics=self.compute_metrics,
+            preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
 
     def init_model(self, model_id, freeze_vision=False, lora=True):

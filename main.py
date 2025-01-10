@@ -12,7 +12,7 @@ def train():
                           image_size=(224, 224),
                           output_folder="../model_checkpoints",
                           output_name='Paligemma-VQA',
-                          num_epochs=1,
+                          num_epochs=5,
                           wand_logging=True,
                           eval_steps=1)
     finetuner.train()
