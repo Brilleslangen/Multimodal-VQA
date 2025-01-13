@@ -6,7 +6,7 @@ def metadata_csv_to_jsonl(in_path, out_path):
 
     metadata['question'] = metadata.apply(
         lambda row: row['question'] + ' Options: ' + ' | '.join(
-            [f"{i}) " + row[f'option{i}'] for i in range(1, 5)]
+            [row[f'option{i}'] for i in range(1, 5)]
         ), axis=1
     )
 

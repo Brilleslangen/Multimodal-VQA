@@ -17,11 +17,6 @@ from helpers import load_dataset, select_device
 from models import VQAClassifier, PaliGemmaForClassification
 
 
-def preprocess_logits_for_metrics(logits, labels):
-    pred_ids = torch.argmax(logits[0], dim=-1)
-    return pred_ids, labels
-
-
 class FineTuner:
     def __init__(self, model_id: str, processor_id, classification: bool, freeze_vision: bool, lora: bool,
                  dataset_id: str,
@@ -64,16 +59,25 @@ class FineTuner:
         else:
             os.environ["WANDB_DISABLED"] = "true"
 
+    def preprocess_logits_for_metrics(self, logits, labels):
+        logits = logits if self.classification_mode else logits[0]
+        pred_ids = torch.argmax(logits, dim=-1)
+
+        print("preprocess: ", pred_ids, labels)
+        return pred_ids, labels
+
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
         label_ids = eval_pred.label_ids
-        pred_ids = eval_pred.predictions
+        pred_ids = eval_pred.predictions[0]
+
+        print("compute: ", pred_ids, label_ids)
 
         if self.classification_mode:
             accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=label_ids)
         else:
             # Generative accuracy
-            pred_ids = np.where(pred_ids != -100, pred_ids[0], self.processor.tokenizer.pad_token_id)
+            pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
 
             label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
@@ -87,10 +91,16 @@ class FineTuner:
         return {"accuracy": accuracy}
 
     def collate_fn(self, examples):
-        texts = ["<image>" + example["question"] for example in examples]
+        texts = ["<image> " + example["question"] for example in examples]
         labels = [example["answer"] for example in examples]
         images = [example["image"] for example in examples]
-        inputs = self.processor(text=texts, images=images, suffix=labels, return_tensors="pt", padding="longest")
+
+        if self.classification_mode:
+            inputs = self.processor(text=texts, images=images, return_tensors="pt", padding="longest")
+            inputs['labels'] = torch.tensor(labels)
+        else:
+            inputs = self.processor(text=texts, images=images, suffix=labels, return_tensors="pt", padding="longest")
+
         inputs = inputs.to(self.model.dtype).to(self.device)
 
         return inputs
@@ -108,12 +118,12 @@ class FineTuner:
             auto_find_batch_size=True,
             load_best_model_at_end=False,
             remove_unused_columns=False,
-            per_device_train_batch_size=2,  # Reduce to lower memory requirements
-            per_device_eval_batch_size=2,
+            per_device_train_batch_size=5,  # Reduce to lower memory requirements
+            per_device_eval_batch_size=5,
             warmup_steps=2,
-            learning_rate=5e-5,
-            weight_decay=1e-6,
-            adam_beta2=0.999,
+            # learning_rate=5e-5,
+            # weight_decay=1e-6,
+            # adam_beta2=0.999,
             logging_steps=200,
             save_total_limit=1,
             dataloader_pin_memory=False,
@@ -125,7 +135,7 @@ class FineTuner:
             eval_dataset=self.dataset['test'],
             data_collator=self.collate_fn,
             compute_metrics=self.compute_metrics,
-            preprocess_logits_for_metrics=preprocess_logits_for_metrics
+            preprocess_logits_for_metrics=self.preprocess_logits_for_metrics
         )
 
     def init_model(self, model_id, freeze_vision=False, lora=True):
@@ -146,7 +156,7 @@ class FineTuner:
         if not self.classification_mode:
             model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
         else:
-            model = VQAClassifier(model_id, num_labels=4, torch_dtype=torch.bfloat16)
+            model = PaliGemmaForClassification(model_id, num_labels=4, torch_dtype=torch.bfloat16)
 
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
 

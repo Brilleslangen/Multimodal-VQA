@@ -7,7 +7,7 @@ def train():
     print('Train')
     finetuner = FineTuner(model_id='google/paligemma2-3b-pt-224',
                           processor_id='google/paligemma2-3b-pt-224',
-                          classification=False,
+                          classification=True,
                           freeze_vision=True,
                           lora=True,
                           dataset_id=dataset_id,

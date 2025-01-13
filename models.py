@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import LongTensor, FloatTensor, Tensor
 from transformers import PaliGemmaPreTrainedModel, PaliGemmaForConditionalGeneration, PaliGemmaConfig, AutoModel
@@ -77,11 +78,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         # 3) Classification head
         # Some PaliGemma configs store `hidden_size` as a list, e.g. [vision_dim, text_dim].
         # We only need the text dimension for classification.
-        if isinstance(config.hidden_size, (list, tuple)):
-            text_hidden_size = config.hidden_size[-1]
-        else:
-            text_hidden_size = config.hidden_size
-        self.classifier = nn.Linear(text_hidden_size, num_labels)
+        self.classifier = nn.Linear(config.text_config.hidden_size, num_labels)
 
         # If your config includes a special token index for image insertion
         self.image_token_index = getattr(config, "image_token_index", None)
@@ -120,7 +117,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         # Project to text_hidden_size
         projected = self.multi_modal_projector(vision_last_hidden)
         # Scale down by sqrt(text_hidden_size), matching original PaliGemma
-        scaled = projected / (self.config.text_config.hidden_size**0.5)
+        scaled = projected / np.sqrt(self.config.text_config.hidden_size**0.5)
 
         return scaled
 
@@ -197,32 +194,19 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             # We expect that in `input_ids`, each image corresponds to some number of image tokens.
             # Usually, you'd tokenize your text so that it has 1 or more special tokens for images,
             # e.g. <image>. Then, we find those positions in input_ids:
-            special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1).to(inputs_embeds.device)
+            special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
             # shape: (batch, seq_len, 1), expanded to match (batch, seq_len, hidden_dim)
-            special_image_mask = special_image_mask.expand_as(inputs_embeds)
+            special_image_mask = special_image_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
 
-            # Check that the total # image tokens in input_ids matches the total # of image embeddings
-            num_text_image_tokens = special_image_mask.sum().item()
-            num_image_features = image_features.shape[0] * image_features.shape[1]
-            if num_text_image_tokens != num_image_features:
+            if inputs_embeds[special_image_mask].numel() != image_features.numel():
+                image_tokens_in_text = torch.sum(input_ids == self.config.image_token_index)
                 raise ValueError(
-                    f"The number of <image> tokens in `input_ids` ({num_text_image_tokens}) does not match "
-                    f"the number of tokens from `image_features` ({num_image_features}). "
-                    "Make sure your data is aligned: for each image, you insert the correct # of <image> tokens."
+                    f"Number of images does not match number of special image tokens in the input text. "
+                    f"Got {image_tokens_in_text} image tokens in the text but {image_features.shape[0] * image_features.shape[1]} "
+                    "tokens from image embeddings."
                 )
-
-            # Merge the image embeddings into the text embedding.
-            # Where special_image_mask is True, we replace the text embedding with the corresponding image embedding.
+            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-
-        # 3) If labels exist, mask out pad tokens
-        # (Same logic as in PaliGemmaForConditionalGeneration.)
-        if labels is not None and (self.pad_token_id in labels):
-            logger.warning_once(
-                "Labels contain the pad_token_id, which will be replaced with -100. "
-                "This matches PaliGemma's LM default but confirm for your classification pipeline."
-            )
-            labels = torch.where(labels == self.pad_token_id, torch.tensor(-100, device=labels.device), labels)
 
         # 4) Forward pass through the text LM (decoder). We only need hidden_states for classification.
         lm_outputs = self.language_model(
@@ -231,7 +215,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             token_type_ids=token_type_ids,
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
+            output_hidden_states=True,
             return_dict=True,  # force True so we can easily read .hidden_states
             **kwargs,
         )
