@@ -14,6 +14,7 @@ from transformers import (
 
 from peft import get_peft_model, LoraConfig
 from helpers import load_dataset, select_device
+from models import VQAClassifier, PaliGemmaForClassification
 
 
 def preprocess_logits_for_metrics(logits, labels):
@@ -22,7 +23,10 @@ def preprocess_logits_for_metrics(logits, labels):
 
 
 class FineTuner:
-    def __init__(self, model_id: str, freeze_vision: bool, lora: bool, dataset_id: str, image_size,
+    def __init__(self, model_id: str, processor_id, classification: bool, freeze_vision: bool, lora: bool,
+                 dataset_id: str,
+                 test_size: float | int,
+                 image_size,
                  output_folder: str,
                  output_name: str,
                  num_epochs: int = 5,
@@ -30,6 +34,7 @@ class FineTuner:
                  eval_steps: int = 50,
                  device=select_device()):
         # Runtime constants
+        self.classification_mode = classification
         self.num_epochs = num_epochs
         self.seed = 42
         self.wandb_logging = wand_logging
@@ -39,12 +44,12 @@ class FineTuner:
         self.device = device
 
         # Dataset and model
-        self.dataset = load_dataset(dataset_id, image_size=image_size)
+        self.dataset = load_dataset(dataset_id, classification, test_size, image_size)
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
         self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora)
-        self.processor = PaliGemmaProcessor.from_pretrained(model_id)
+        self.processor = PaliGemmaProcessor.from_pretrained(processor_id)
         self.trainer = self.init_trainer()
 
         # Initialize training logger
@@ -62,21 +67,24 @@ class FineTuner:
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
         label_ids = eval_pred.label_ids
-        pred_ids = eval_pred.predictions[0]
+        pred_ids = eval_pred.predictions
 
-        pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
-        predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
+        if self.classification_mode:
+            # Classification accuracy
+            predictions, labels = eval_pred
+            accuracy = evaluate.load('accuracy').compute(predictions=predictions, references=labels)
+        else:
+            # Generative accuracy
+            pred_ids[pred_ids == -100] = self.processor.tokenizer.pad_token_id
+            predictions = self.processor.tokenizer.batch_decode(pred_ids[0], skip_special_tokens=True)
 
-        # Cut off from first eos token with regex
-        predictions = [re.match(r'^(.*?)<eos>', p).group(1).strip()
-                       if '<eos>' in p else p.strip() for p in predictions]
+            label_ids[label_ids == -100] = self.processor.tokenizer.pad_token_id
+            labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
 
-        # Convert label input_ids to text
-        label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
-        labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
-        correct = sum([p == l for p, l in zip(predictions, labels)])
-        accuracy = correct / len(predictions)
+            for prediction, label in zip(predictions, labels):
+                print(f"Generation: {prediction} \nAnswer {label}")
+            correct = sum([p == l for p, l in zip(predictions, labels)])
+            accuracy = correct / len(predictions)
 
         return {"accuracy": accuracy}
 
@@ -137,9 +145,11 @@ class FineTuner:
             task_type="CAUSAL_LM",
         )
 
-        model = PaliGemmaForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16)
+        if not self.classification_mode:
+            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+        else:
+            model = VQAClassifier(model_id, num_labels=4, torch_dtype=torch.bfloat16)
+
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
 
         if lora:
