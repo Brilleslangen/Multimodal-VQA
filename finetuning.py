@@ -70,15 +70,13 @@ class FineTuner:
         pred_ids = eval_pred.predictions
 
         if self.classification_mode:
-            # Classification accuracy
-            predictions, labels = eval_pred
-            accuracy = evaluate.load('accuracy').compute(predictions=predictions, references=labels)
+            accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=label_ids)
         else:
             # Generative accuracy
-            pred_ids[pred_ids == -100] = self.processor.tokenizer.pad_token_id
-            predictions = self.processor.tokenizer.batch_decode(pred_ids[0], skip_special_tokens=True)
+            pred_ids = np.where(pred_ids != -100, pred_ids[0], self.processor.tokenizer.pad_token_id)
+            predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
 
-            label_ids[label_ids == -100] = self.processor.tokenizer.pad_token_id
+            label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
             labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
 
             for prediction, label in zip(predictions, labels):
