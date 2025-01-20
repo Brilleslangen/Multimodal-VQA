@@ -3,6 +3,7 @@ import evaluate
 import numpy as np
 import wandb
 import torch
+from sentence_transformers import SentenceTransformer, SimilarityFunction
 from transformers import (
     PaliGemmaForConditionalGeneration,
     PaliGemmaProcessor,
@@ -42,6 +43,7 @@ class FineTuner:
         self.output_name = output_name
         self.device = device
         self.sep_token = '\n<separator>\n'
+        # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
 
         # Dataset and model
         self.dataset = load_and_preprocess_dataset(dataset_id, mode, self.sep_token, test_size, image_size)
@@ -51,6 +53,13 @@ class FineTuner:
         self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora)
         self.processor = PaliGemmaProcessor.from_pretrained(processor_id)
         self.trainer = self.init_trainer()
+
+        # Cosine similarity model
+        if self.mode == Mode.COND_GEN:
+            self.cosine_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            self.cosine_model.similarity_fn_name = SimilarityFunction.COSINE
+        else:
+            self.cosine_model = None
 
         # Initialize training logger
         if self.wandb_logging:
@@ -72,30 +81,19 @@ class FineTuner:
 
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
-        label_ids = eval_pred.label_ids
         pred_ids = eval_pred.predictions[0]
 
-        if self.classification:
-            accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=label_ids)
-        else:
-            # Generative accuracy
+        if self.mode == Mode.COND_GEN:
             pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             predictions = [extract_last_eos_group(p) for p in predictions]
-
-            label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
-            labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
-            for prediction, label in zip(predictions, labels):
-                print(f"Generation: {prediction} \nAnswer {label}")
-            correct = sum([p == l for p, l in zip(predictions, labels)])
-            accuracy = correct / len(predictions)
-
+            pred_ids = self.cosine_sim_to_label_indice(predictions, self.dataset['test']['options'])
+        print(self.dataset['test']['text_answer'], self.dataset['test']['options'])
+        accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=self.dataset['test']['answer'])
         return {"accuracy": accuracy}
 
     def collate_fn(self, batch):
         if self.mode == Mode.SWAG:
-            # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
             unfolded_batch = {'question_option_pair': [], 'image': [], 'answer': []}
 
             # 4 New rows for each question
@@ -109,10 +107,11 @@ class FineTuner:
             inputs = self.processor(text=batch['question_option_pair'], images=batch['image'], return_tensors="pt",
                                     padding="longest")
             inputs['labels'] = torch.tensor(batch['answer'])
-        else:
+            inputs['labels2'] = torch.tensor(batch['answer'])
+        elif self.mode == Mode.COND_GEN:
             questions = [row['question'] for row in batch]
             images = [row['image'] for row in batch]
-            answers = [row["answer"] for row in batch]
+            answers = [row["text_answer"] for row in batch]
 
             inputs = self.processor(text=questions, images=images, suffix=answers, return_tensors="pt",
                                     padding="longest")
@@ -124,6 +123,7 @@ class FineTuner:
     def init_trainer(self):
         training_args = TrainingArguments(
             output_dir=os.path.join(self.output_folder, self.output_name),
+            include_for_metrics=["inputs"],
             eval_strategy='steps',
             eval_steps=self.eval_steps,
             save_strategy='steps',
@@ -195,6 +195,30 @@ class FineTuner:
                 param.requires_grad = False
 
         return model.to(self.device)
+
+    def cosine_sim_to_label_indice(self, predictions, options):
+        """
+        Given a list of string predictions and a list of string options (both in English and Japanese),
+        this function returns the index of the option that has the highest cosine similarity with the predicted text.
+        """
+
+        indices = []
+
+        for pred, opts in zip(predictions, options):
+            # Encode prediction and all options
+            text_list = [pred] + opts  # Combine prediction and options
+            embeddings = self.cosine_model.encode(text_list, convert_to_numpy=True)
+
+            # Compute cosine similarities between prediction and options
+            pred_embedding = embeddings[0].reshape(1, -1)
+            option_embeddings = embeddings[1:]
+
+            similarities = self.cosine_model.similarity(pred_embedding, option_embeddings)
+            best_index = np.argmax(similarities)
+
+            indices.append(best_index)
+
+        return indices
 
     def train(self):
         self.trainer.train()
