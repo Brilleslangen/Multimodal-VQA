@@ -31,7 +31,6 @@ def extract_last_eos_group(text):
 
 def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.05, image_size=(224, 224)) -> (
         DatasetDict, int):
-
     def resize_images(batch):
         batch['image'] = [image.resize(image_size) for image in batch['image']]
         return batch
@@ -41,7 +40,7 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
         return batch
 
     def map_to_text_answer(batch):
-        batch['answer'] = [batch[f'option{ans}'][i] for i, ans in enumerate(batch['answer'])]
+        batch['text_answer'] = [batch[f'option{ans}'][i] for i, ans in enumerate(batch['answer'])]
         return batch
 
     def map_to_label_indices(batch):
@@ -57,22 +56,38 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
                              + 'Options: ' + ' | '.join([batch[f'option{i}'][idx] for i in range(1, 5)]) + sep_token
                              + 'Answer:'
                              for idx, question in enumerate(batch['question'])]
+        batch['options'] = [[f"{batch[f'option{i}'][idx]}" for i in range(1, 5)]
+                            for idx in range(len(batch['question']))]
 
         return batch
 
-    def preprocess_for_MNLI(batch):
-        batch['question_option_pairs'] = [[f"{question}{sep_token}Hyptothesis: {batch[f'option{i}'][idx]}"
+    def preprocess_for_SWAG(batch):
+        batch['question_option_pairs'] = [[f"{question}{sep_token}Hypothesis: {batch[f'option{i}'][idx]}"
                                            for i in range(1, 5)] for idx, question in enumerate(batch['question'])]
         batch.pop('question', None)
+        return batch
+
+    def preprocess_for_multi_class(batch):
+        enumerators = ['A', 'B', 'C', 'D']
+        batch['question'] = [question + sep_token
+                             + 'Options: ' + ' | '.join([enumerators[i - 1] + ") " + batch[f'option{i}'][idx]
+                                                         for i in range(1, 5)]) + sep_token
+                             + 'Answer:'
+                             for idx, question in enumerate(batch['question'])]
+
         return batch
 
     dataset = load_dataset(dataset_id, split='train')
     dataset = dataset.map(resize_images, batched=True)
     dataset = dataset.map(insert_image, batched=True)
 
-    if mode == Mode.SWAG:
+    if mode == Mode.MULTI_CLASS:
         dataset = dataset.map(map_to_label_indices, batched=True)
-        dataset = dataset.map(preprocess_for_MNLI, batched=True)
+        dataset = dataset.map(preprocess_for_multi_class, batched=True)
+
+    elif mode == Mode.SWAG:
+        dataset = dataset.map(map_to_label_indices, batched=True)
+        dataset = dataset.map(preprocess_for_SWAG, batched=True)
     else:
         dataset = dataset.map(preprocess_for_conditional_gen, batched=True)
         dataset = dataset.map(map_to_text_answer, batched=True)

@@ -99,6 +99,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         inputs_embeds: Optional[FloatTensor] = None,
         labels: Optional[LongTensor] = None,
         output_attentions: bool = None,
+        output_hidden_states: bool = True,  # We want final hidden states
         return_dict: bool = True,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
@@ -194,13 +195,13 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         # Pack logits back into their respective multiple-choice bundle corresponding to a single question
         if self.swag_mode:
             batch_size = logits.size(0) // 4
-            reshaped_logits = logits.view(batch_size, 4)  # (batch_size, 4)
+            logits = logits.view(batch_size, 4)  # (batch_size, 4)
 
         loss = None
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(reshaped_logits, labels)  # labels: shape (batch_size,)
+            loss = loss_fct(logits, labels)  # labels: shape (batch_size,)
 
-        output = {"loss": loss, "logits": reshaped_logits}
+        output = {"loss": loss, "logits": logits}
 
-        return output if return_dict else (loss, reshaped_logits)
+        return output if return_dict else (loss, logits)
