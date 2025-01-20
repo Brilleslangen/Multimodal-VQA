@@ -7,7 +7,8 @@ from transformers import (
     PaliGemmaForConditionalGeneration,
     PaliGemmaProcessor,
     Trainer,
-    TrainingArguments)
+    TrainingArguments,
+    BitsAndBytesConfig)
 
 from peft import get_peft_model, LoraConfig
 from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group, Mode
@@ -27,6 +28,7 @@ class FineTuner:
                  num_epochs: int = 5,
                  wand_logging: bool = True,
                  eval_steps: int = 50,
+                 qlora: bool = False,
                  device=select_device()):
         # Runtime constants
         self.mode = mode
@@ -152,7 +154,7 @@ class FineTuner:
             preprocess_logits_for_metrics=self.preprocess_logits_for_metrics
         )
 
-    def init_model(self, model_id, freeze_vision=False, lora=True):
+    def init_model(self, model_id, freeze_vision=False, lora=True, qlora=False):
         lora_config = LoraConfig(
             r=8,
             target_modules=[
@@ -167,10 +169,18 @@ class FineTuner:
             task_type="CAUSAL_LM",
         )
 
+        if qlora:
+            bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_type=torch.bfloat16)
+
         if self.mode == Mode.SWAG:
             model = PaliGemmaForClassification(model_id, swag_mode=True, num_labels=4, torch_dtype=torch.bfloat16)
         else:
-            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
+                                                                      attn_implementation='eager', 
+                                                                      quantization_config=bnb_config if qlora else None)
 
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
 
