@@ -1,6 +1,6 @@
 from transformers import pipeline
 import pandas as pd
-from helpers import select_device, load_dataset
+from helpers import select_device, load_and_preprocess_dataset
 
 tokenizer_config = {'padding': True, 'truncation': True, 'max_length': 512}
 
@@ -16,7 +16,7 @@ def predict_dataset(model: str, test_df):
 
 
 def produce_test_result_matrix(dataset_name, classifier_name, output_name):
-    dataset, _ = load_dataset(csv_path=f"../../dataset/{dataset_name}")
+    dataset, _ = load_and_preprocess_dataset(csv_path=f"../../dataset/{dataset_name}")
     test_df = dataset['test'].to_pandas()
 
     pred_df = predict_dataset(model=f"{classifier_name}", test_df=test_df)

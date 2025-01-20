@@ -7,11 +7,11 @@ def train():
     print('Train')
     finetuner = FineTuner(model_id='google/paligemma2-3b-pt-224',
                           processor_id='google/paligemma2-3b-pt-224',
-                          classification=True,
+                          classification=False,
                           freeze_vision=True,
                           lora=True,
                           dataset_id=dataset_id,
-                          test_size=10,
+                          test_size=4,
                           image_size=(224, 224),
                           batch_size=1,
                           output_folder="../model_checkpoints",

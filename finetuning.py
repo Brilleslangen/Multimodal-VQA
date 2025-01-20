@@ -12,7 +12,7 @@ from transformers import (
     TrainingArguments)
 
 from peft import get_peft_model, LoraConfig
-from helpers import load_dataset, select_device, extract_last_eos_group
+from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group
 from models import PaliGemmaForClassification
 
 
@@ -38,9 +38,10 @@ class FineTuner:
         self.output_folder = output_folder
         self.output_name = output_name
         self.device = device
+        self.sep_token = '\n<separator>\n'
 
         # Dataset and model
-        self.dataset = load_dataset(dataset_id, classification, test_size, image_size)
+        self.dataset = load_and_preprocess_dataset(dataset_id, classification, self.sep_token, test_size, image_size)
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
@@ -64,7 +65,6 @@ class FineTuner:
         logits = logits if self.classification_mode else logits[0]
         pred_ids = torch.argmax(logits, dim=-1)
 
-        print("preprocess: ", pred_ids, labels)
         return pred_ids, labels
 
     def compute_metrics(self, eval_pred):
@@ -94,26 +94,27 @@ class FineTuner:
 
     def collate_fn(self, batch):
         if self.classification_mode:
-            unfolded_batch = {'question': [], 'image': [], 'answer': []}
-            sep_token = '\n<separator>\n'
             # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
+            unfolded_batch = {'question_option_pair': [], 'image': [], 'answer': []}
 
-            for row in batch:  # 4 New rows for each question
-                options_text = 'Options:' + '| '.join(row[f'option{i}'] for i in range(1, 5))
-                question_option_pairs = [f"{row['question']}{sep_token}Hyptothesis: {row[f'option{i}']}" for i in range(1, 5)]
+            # 4 New rows for each question
+            for row in batch:
                 unfolded_batch['answer'].append(row['answer'])
-                for question_option in question_option_pairs:
+                for pair in row['question_option_pairs']:
+                    unfolded_batch['question_option_pair'].append(pair)
                     unfolded_batch['image'].append(row['image'])
-                    unfolded_batch['question'].append(question_option)
-
-            print('Question option pair:', unfolded_batch['question'][0])
 
             batch = unfolded_batch
-            inputs = self.processor(text=batch['question'], images=batch['image'], return_tensors="pt", padding="longest")
+            inputs = self.processor(text=batch['question_option_pair'], images=batch['image'], return_tensors="pt",
+                                    padding="longest")
             inputs['labels'] = torch.tensor(batch['answer'])
         else:
-            inputs = self.processor(text=batch['question'], images=batch['image'], suffix=batch['answer'],
-                                    return_tensors="pt", padding="longest")
+            questions = [row['question'] for row in batch]
+            images = [row['image'] for row in batch]
+            answers = [row["answer"] for row in batch]
+
+            inputs = self.processor(text=questions, images=images, suffix=answers, return_tensors="pt",
+                                    padding="longest")
 
         inputs = inputs.to(self.model.dtype).to(self.device)
 
