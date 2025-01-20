@@ -1,8 +1,15 @@
 import re
+from enum import Enum
 
 import torch
 from datasets import Dataset, load_dataset
 from datasets import DatasetDict
+
+
+class Mode(Enum):
+    COND_GEN = 'Conditional generation'
+    MULTI_CLASS = 'Classical multi-class classification'
+    SWAG = 'SWAG-based multi-class classification'
 
 
 def select_device():
@@ -22,23 +29,8 @@ def extract_last_eos_group(text):
     return text.strip()
 
 
-def load_and_preprocess_dataset(dataset_id, classification: bool, sep_token, test_size=0.05, image_size=(224, 224)) -> (
+def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.05, image_size=(224, 224)) -> (
         DatasetDict, int):
-    """
-    Loads a dataset from a CSV file, preprocesses it, and splits it into training and test sets.
-
-    Args:
-        classification: true if the dataset is for classification, false for generation
-        image_size: Tuple of image dims
-        self (str): The file path to the CSV file containing the dataset.
-        dataset_id (str): The dataset id.
-        test_size (float): The proportion of the dataset to include in the test split.
-
-    Returns:
-        DatasetDict: A dictionary containing 'train' and 'test' datasets.
-    """
-
-    # Load data from CSV
 
     def resize_images(batch):
         batch['image'] = [image.resize(image_size) for image in batch['image']]
@@ -70,7 +62,7 @@ def load_and_preprocess_dataset(dataset_id, classification: bool, sep_token, tes
 
     def preprocess_for_MNLI(batch):
         batch['question_option_pairs'] = [[f"{question}{sep_token}Hyptothesis: {batch[f'option{i}'][idx]}"
-                                          for i in range(1, 5)] for idx, question in enumerate(batch['question'])]
+                                           for i in range(1, 5)] for idx, question in enumerate(batch['question'])]
         batch.pop('question', None)
         return batch
 
@@ -78,7 +70,7 @@ def load_and_preprocess_dataset(dataset_id, classification: bool, sep_token, tes
     dataset = dataset.map(resize_images, batched=True)
     dataset = dataset.map(insert_image, batched=True)
 
-    if classification:
+    if mode == Mode.SWAG:
         dataset = dataset.map(map_to_label_indices, batched=True)
         dataset = dataset.map(preprocess_for_MNLI, batched=True)
     else:

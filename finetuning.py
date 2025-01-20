@@ -1,6 +1,4 @@
 import os
-import re
-
 import evaluate
 import numpy as np
 import wandb
@@ -12,12 +10,14 @@ from transformers import (
     TrainingArguments)
 
 from peft import get_peft_model, LoraConfig
-from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group
+from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group, Mode
 from models import PaliGemmaForClassification
 
 
 class FineTuner:
-    def __init__(self, model_id: str, processor_id, classification: bool, freeze_vision: bool, lora: bool,
+    MODES = [Mode.COND_GEN, Mode.MULTI_CLASS, Mode.SWAG]
+
+    def __init__(self, model_id: str, processor_id, mode: Mode, freeze_vision: bool, lora: bool,
                  dataset_id: str,
                  test_size: float | int,
                  batch_size: int,
@@ -29,8 +29,9 @@ class FineTuner:
                  eval_steps: int = 50,
                  device=select_device()):
         # Runtime constants
-        self.classification_mode = classification
-        self.batch_size = batch_size if classification else batch_size
+        self.mode = mode
+        self.classification = mode != Mode.COND_GEN
+        self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.seed = 42
         self.wandb_logging = wand_logging
@@ -41,7 +42,7 @@ class FineTuner:
         self.sep_token = '\n<separator>\n'
 
         # Dataset and model
-        self.dataset = load_and_preprocess_dataset(dataset_id, classification, self.sep_token, test_size, image_size)
+        self.dataset = load_and_preprocess_dataset(dataset_id, mode, self.sep_token, test_size, image_size)
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
@@ -62,7 +63,7 @@ class FineTuner:
             os.environ["WANDB_DISABLED"] = "true"
 
     def preprocess_logits_for_metrics(self, logits, labels):
-        logits = logits if self.classification_mode else logits[0]
+        logits = logits if self.classification else logits[0]
         pred_ids = torch.argmax(logits, dim=-1)
 
         return pred_ids, labels
@@ -72,9 +73,7 @@ class FineTuner:
         label_ids = eval_pred.label_ids
         pred_ids = eval_pred.predictions[0]
 
-        print("compute: ", pred_ids, label_ids)
-
-        if self.classification_mode:
+        if self.classification:
             accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=label_ids)
         else:
             # Generative accuracy
@@ -93,7 +92,7 @@ class FineTuner:
         return {"accuracy": accuracy}
 
     def collate_fn(self, batch):
-        if self.classification_mode:
+        if self.mode == Mode.SWAG:
             # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
             unfolded_batch = {'question_option_pair': [], 'image': [], 'answer': []}
 
@@ -168,10 +167,10 @@ class FineTuner:
             task_type="CAUSAL_LM",
         )
 
-        if not self.classification_mode:
-            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+        if self.mode == Mode.SWAG:
+            model = PaliGemmaForClassification(model_id, swag_mode=True, num_labels=4, torch_dtype=torch.bfloat16)
         else:
-            model = PaliGemmaForClassification(model_id, num_labels=4, torch_dtype=torch.bfloat16)
+            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
 
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
 

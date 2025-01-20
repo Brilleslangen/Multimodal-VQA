@@ -30,22 +30,20 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
       **kwargs: passed to `PaliGemmaConfig.from_pretrained(...)`.
     """
 
-    def __init__(self, model_id: str, **kwargs):
-        # 1) Load config
+    def __init__(self, model_id: str, swag_mode: bool, num_labels: int, **kwargs):
         config = PaliGemmaConfig.from_pretrained(model_id, **kwargs)
         super().__init__(config)
+        self.swag_mode = swag_mode
 
-        # 2) Build submodules for vision + text (similar to PaliGemmaForConditionalGeneration)
+        # Build submodules for vision + text (similar to PaliGemmaForConditionalGeneration)
         self.vision_tower = AutoModel.from_config(config.vision_config)
         self.multi_modal_projector = PaliGemmaMultiModalProjector(config)
-
-        # text_config is typically the "decoder" config
         self.language_model = AutoModelForCausalLM.from_config(config.text_config)
-        # We do NOT care about the LM head here; we just want the hidden states.
+        # We do not care about the LM head here; we just want the hidden states.
 
-        # 3) Classification head + attention layer
-        self.output_attention = nn.Linear(config.text_config.hidden_size, 1)
-        self.classifier = nn.Linear(config.text_config.hidden_size, 1)
+        # Custom Classification head + attention layer
+        self.output_attention = nn.Linear(config.text_config.hidden_size, 1 if swag_mode else num_labels)
+        self.classifier = nn.Linear(config.text_config.hidden_size, 1 if swag_mode else num_labels)
 
         # If your config includes a special token index for image insertion
         self.image_token_index = getattr(config, "image_token_index", None)
@@ -101,7 +99,6 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         inputs_embeds: Optional[FloatTensor] = None,
         labels: Optional[LongTensor] = None,
         output_attentions: bool = None,
-        output_hidden_states: bool = True,  # We want final hidden states
         return_dict: bool = True,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
@@ -195,8 +192,9 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         logits = self.classifier(pooled_output).squeeze(-1)  # (batch_size*4,)
 
         # Pack logits back into their respective multiple-choice bundle corresponding to a single question
-        batch_size = logits.size(0) // 4
-        reshaped_logits = logits.view(batch_size, 4)  # (batch_size, 4)
+        if self.swag_mode:
+            batch_size = logits.size(0) // 4
+            reshaped_logits = logits.view(batch_size, 4)  # (batch_size, 4)
 
         loss = None
         if labels is not None:
