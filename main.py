@@ -13,6 +13,7 @@ def train():
                           dataset_id=dataset_id,
                           test_size=10,
                           image_size=(224, 224),
+                          batch_size=1,
                           output_folder="../model_checkpoints",
                           output_name='Paligemma-VQA',
                           num_epochs=5,

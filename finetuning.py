@@ -9,18 +9,18 @@ from transformers import (
     PaliGemmaForConditionalGeneration,
     PaliGemmaProcessor,
     Trainer,
-    TrainingArguments,
-    DataCollatorWithPadding)
+    TrainingArguments)
 
 from peft import get_peft_model, LoraConfig
-from helpers import load_dataset, select_device
-from models import VQAClassifier, PaliGemmaForClassification
+from helpers import load_dataset, select_device, extract_last_eos_group
+from models import PaliGemmaForClassification
 
 
 class FineTuner:
     def __init__(self, model_id: str, processor_id, classification: bool, freeze_vision: bool, lora: bool,
                  dataset_id: str,
                  test_size: float | int,
+                 batch_size: int,
                  image_size,
                  output_folder: str,
                  output_name: str,
@@ -30,6 +30,7 @@ class FineTuner:
                  device=select_device()):
         # Runtime constants
         self.classification_mode = classification
+        self.batch_size = batch_size if classification else batch_size
         self.num_epochs = num_epochs
         self.seed = 42
         self.wandb_logging = wand_logging
@@ -79,6 +80,7 @@ class FineTuner:
             # Generative accuracy
             pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
+            predictions = [extract_last_eos_group(p) for p in predictions]
 
             label_ids = np.where(label_ids != -100, label_ids, self.processor.tokenizer.pad_token_id)
             labels = self.processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
@@ -90,16 +92,28 @@ class FineTuner:
 
         return {"accuracy": accuracy}
 
-    def collate_fn(self, examples):
-        texts = ["<image> " + example["question"] for example in examples]
-        labels = [example["answer"] for example in examples]
-        images = [example["image"] for example in examples]
-
+    def collate_fn(self, batch):
         if self.classification_mode:
-            inputs = self.processor(text=texts, images=images, return_tensors="pt", padding="longest")
-            inputs['labels'] = torch.tensor(labels)
+            unfolded_batch = {'question': [], 'image': [], 'answer': []}
+            sep_token = '\n<separator>\n'
+            # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
+
+            for row in batch:  # 4 New rows for each question
+                options_text = 'Options:' + '| '.join(row[f'option{i}'] for i in range(1, 5))
+                question_option_pairs = [f"{row['question']}{sep_token}Hyptothesis: {row[f'option{i}']}" for i in range(1, 5)]
+                unfolded_batch['answer'].append(row['answer'])
+                for question_option in question_option_pairs:
+                    unfolded_batch['image'].append(row['image'])
+                    unfolded_batch['question'].append(question_option)
+
+            print('Question option pair:', unfolded_batch['question'][0])
+
+            batch = unfolded_batch
+            inputs = self.processor(text=batch['question'], images=batch['image'], return_tensors="pt", padding="longest")
+            inputs['labels'] = torch.tensor(batch['answer'])
         else:
-            inputs = self.processor(text=texts, images=images, suffix=labels, return_tensors="pt", padding="longest")
+            inputs = self.processor(text=batch['question'], images=batch['image'], suffix=batch['answer'],
+                                    return_tensors="pt", padding="longest")
 
         inputs = inputs.to(self.model.dtype).to(self.device)
 
@@ -112,14 +126,14 @@ class FineTuner:
             eval_steps=self.eval_steps,
             save_strategy='steps',
             save_steps=500,
-            optim='adamw_hf',
+            optim='adamw_torch',
             bf16=True,
             num_train_epochs=self.num_epochs,
             auto_find_batch_size=True,
             load_best_model_at_end=False,
             remove_unused_columns=False,
-            per_device_train_batch_size=5,  # Reduce to lower memory requirements
-            per_device_eval_batch_size=5,
+            per_device_train_batch_size=self.batch_size,  # Reduce to lower memory requirements
+            per_device_eval_batch_size=self.batch_size,
             warmup_steps=2,
             # learning_rate=5e-5,
             # weight_decay=1e-6,

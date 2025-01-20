@@ -1,40 +1,8 @@
 import numpy as np
 import torch
-from torch import LongTensor, FloatTensor, Tensor
-from transformers import PaliGemmaPreTrainedModel, PaliGemmaForConditionalGeneration, PaliGemmaConfig, AutoModel
-import torch.nn as nn
-from transformers.models.paligemma.modeling_paligemma import PaliGemmaCausalLMOutputWithPast
-
-
-class VQAClassifier(PaliGemmaForConditionalGeneration):
-    def __init__(self, model_id, num_labels, **kwargs):
-        config = PaliGemmaConfig.from_pretrained(model_id, **kwargs)
-        super().__init__(config)
-
-        self.vision_tower = AutoModel.from_config(config=config.vision_config)
-        print(config.hidden_size)
-        self.classifier = nn.Linear(2304, num_labels)
-
-    def forward(self, labels, **kwargs) -> tuple | dict:
-        outputs = super().forward(output_hidden_states=True, **kwargs)
-        print(outputs.hidden_states[-1])
-        logits = self.classifier(outputs.hidden_states[-1])  # Shape: (batch_size, num_labels)
-
-        loss = None
-        if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(logits, labels)
-
-        return {"loss": loss, "logits": logits}
-
-
-import torch
 import torch.nn as nn
 from torch import LongTensor, FloatTensor, Tensor
-from typing import Optional, Union, Dict
-
-# If you're working in a local clone of HF Transformers or a custom environment,
-# adjust these imports to point to the correct location of your PaliGemma code.
+from typing import Optional, Dict
 from transformers import (
     PaliGemmaConfig,
     PaliGemmaPreTrainedModel,
@@ -54,7 +22,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
     A classification model built on top of PaliGemma. It:
       - Uses a vision tower + projector to obtain image embeddings.
       - Uses a language model (decoder-only Transformer) to encode text (and possibly inserted image embeddings).
-      - Pools the final text hidden states (e.g., the first token) and applies a linear classifier.
+      - Pools the final text hidden states (the first token) and applies a linear classifier.
 
     Args:
       model_id (str): path or ID to a pretrained PaliGemma checkpoint.
@@ -62,7 +30,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
       **kwargs: passed to `PaliGemmaConfig.from_pretrained(...)`.
     """
 
-    def __init__(self, model_id: str, num_labels: int, **kwargs):
+    def __init__(self, model_id: str, **kwargs):
         # 1) Load config
         config = PaliGemmaConfig.from_pretrained(model_id, **kwargs)
         super().__init__(config)
@@ -75,10 +43,9 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         self.language_model = AutoModelForCausalLM.from_config(config.text_config)
         # We do NOT care about the LM head here; we just want the hidden states.
 
-        # 3) Classification head
-        # Some PaliGemma configs store `hidden_size` as a list, e.g. [vision_dim, text_dim].
-        # We only need the text dimension for classification.
-        self.classifier = nn.Linear(config.text_config.hidden_size, num_labels)
+        # 3) Classification head + attention layer
+        self.output_attention = nn.Linear(config.text_config.hidden_size, 1)
+        self.classifier = nn.Linear(config.text_config.hidden_size, 1)
 
         # If your config includes a special token index for image insertion
         self.image_token_index = getattr(config, "image_token_index", None)
@@ -165,14 +132,10 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             raise ValueError("Please provide either `input_ids` or `inputs_embeds`.")
 
         # If we are passing in pixel_values, we cannot also pass in custom inputs_embeds
-        # (unless you do some advanced custom logic).
         if pixel_values is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both pixel_values and inputs_embeds at the same time.")
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # 1) If the user did not provide direct embeddings, build them from input_ids
@@ -189,13 +152,9 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
 
             # Extract image features from the vision tower
             image_features = self.get_image_features(pixel_values)
-            # shape: (batch, image_seq_len, text_hidden_size)
-
-            # We expect that in `input_ids`, each image corresponds to some number of image tokens.
-            # Usually, you'd tokenize your text so that it has 1 or more special tokens for images,
-            # e.g. <image>. Then, we find those positions in input_ids:
             special_image_mask = (input_ids == self.image_token_index).unsqueeze(-1)
-            # shape: (batch, seq_len, 1), expanded to match (batch, seq_len, hidden_dim)
+
+            # Insert image features at the image token index
             special_image_mask = special_image_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
 
             if inputs_embeds[special_image_mask].numel() != image_features.numel():
@@ -208,7 +167,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-        # 4) Forward pass through the text LM (decoder). We only need hidden_states for classification.
+        # Forward pass through the text LM (decoder). We only need hidden_states for classification.
         lm_outputs = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -220,31 +179,30 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             **kwargs,
         )
 
-        # last_hidden_state: (batch, seq_len, hidden_dim)
-        last_hidden_state = lm_outputs.hidden_states[-1]
+        last_hidden_state = lm_outputs.hidden_states[-1]  # shape: (batch_size*4, seq_len, hidden_dim)
 
-        # 5) Pooling strategy for classification:
-        #    For a decoder-only model, there's no official "[CLS]" token.
-        #    We'll just take the first token's embedding.
-        #    (You could also do average pooling or the last token, depending on your usage.)
-        cls_representation = last_hidden_state[:, 0, :]  # shape: (batch, hidden_dim)
+        # Compute attention scores
+        scores = self.output_attention(last_hidden_state).squeeze(-1)  # (batch_size*4, seq_len)
+        if attention_mask is not None:
+            scores = scores.masked_fill(attention_mask == 0, float("-inf"))
 
-        # 6) Classification
-        logits = self.classifier(cls_representation)  # shape: (batch, num_labels)
+        # Normalize scores with softmax
+        scores = scores - scores.max(dim=-1, keepdim=True).values
+        attention_probs = nn.functional.softmax(scores, dim=-1)  # (batch_size*4, seq_len)
 
-        # 7) Optional classification loss
+        # Compute weighted sum of hidden states
+        pooled_output = torch.bmm(attention_probs.unsqueeze(1), last_hidden_state).squeeze(1)
+        logits = self.classifier(pooled_output).squeeze(-1)  # (batch_size*4,)
+
+        # Pack logits back into their respective multiple-choice bundle corresponding to a single question
+        batch_size = logits.size(0) // 4
+        reshaped_logits = logits.view(batch_size, 4)  # (batch_size, 4)
+
         loss = None
         if labels is not None:
-            # E.g., shape of `labels`: (batch,)
-            # shape of `logits`: (batch, num_labels)
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(logits, labels)
+            loss = loss_fct(reshaped_logits, labels)  # labels: shape (batch_size,)
 
-        output = {"loss": loss, "logits": logits}
+        output = {"loss": loss, "logits": reshaped_logits}
 
-        if return_dict:
-            return output
-        else:
-            # Return a tuple if not using dict
-            return (loss, logits)
-
+        return output if return_dict else (loss, reshaped_logits)

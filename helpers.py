@@ -1,3 +1,5 @@
+import re
+
 import torch
 from datasets import Dataset, load_dataset as load_ds
 from datasets import DatasetDict
@@ -10,6 +12,14 @@ def select_device():
         return torch.device("cuda")
     else:
         return torch.device("cpu")
+
+
+def extract_last_eos_group(text):
+    if '<eos>' in text:
+        text = re.sub(r'(<eos>\s*)+', '<eos>', text)
+        matches = re.findall(r'(.*?)<eos>', text)
+        return matches[-1].strip() if matches else text.strip()
+    return text.strip()
 
 
 def load_dataset(dataset_id, classification: bool, test_size=0.05, image_size=(224, 224)) -> (DatasetDict, int):
@@ -32,20 +42,40 @@ def load_dataset(dataset_id, classification: bool, test_size=0.05, image_size=(2
         batch['image'] = [image.resize(image_size) for image in batch['image']]
         return batch
 
+    def insert_image(batch):
+        batch['question'] = [f"<image> {question}" for question in batch['question']]
+        return batch
+
     def map_to_text_answer(batch):
         batch['answer'] = [batch[f'option{ans}'][i] for i, ans in enumerate(batch['answer'])]
         return batch
 
     def map_to_label_indices(batch):
-        batch['answer'] = [batch['answer'][i]-1 for i, ans in enumerate(batch['answer'])]
+        batch['answer'] = [ans - 1 for ans in batch['answer']]
+        return batch
+
+    def concatenate_options(batch):
+        """
+        Modify the 'question' field to include all four options concatenated with a separator.
+        E.g., "Question text Options: Option1 | Option2 | Option3 | Option4"
+        """
+        batch['question'] = [
+            f"{q} Options: {' | '.join([batch[f'option{i}'][idx] for i in range(1, 5)])}"
+            for idx, q in enumerate(batch['question'])
+        ]
         return batch
 
     dataset: Dataset = load_ds(dataset_id, split='train')
     dataset = dataset.map(resize_images, batched=True)
+    dataset = dataset.map(insert_image, batched=True)
 
-    dataset = dataset.map(map_to_label_indices, batched=True) if classification else dataset.map(map_to_text_answer,
-                                                                                                 batched=True)
-    dataset.remove_columns([f'option{i}' for i in range(1, 5)])
+    if classification:
+        dataset = dataset.map(map_to_label_indices, batched=True)
+    else:
+        dataset = dataset.map(concatenate_options, batched=True)
+        dataset.map(map_to_text_answer, batched=True)
+        dataset.remove_columns([f'option{i}' for i in range(1, 5)])
+
     train_test_split = dataset.train_test_split(seed=42, test_size=test_size)
 
     return train_test_split
