@@ -78,7 +78,7 @@ class FineTuner:
         logits = logits if self.classification else logits[0]
         pred_ids = torch.argmax(logits, dim=-1)
 
-        return pred_ids.to(self.model.dtype).to(self.device), labels.to(self.model.dtype).to(self.device)
+        return pred_ids, labels
 
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
