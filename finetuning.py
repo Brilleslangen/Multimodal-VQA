@@ -51,7 +51,7 @@ class FineTuner:
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
-        self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora)
+        self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora, qlora=qlora)
         self.processor = PaliGemmaProcessor.from_pretrained(processor_id)
         self.trainer = self.init_trainer()
 
