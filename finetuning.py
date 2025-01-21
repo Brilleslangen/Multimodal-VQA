@@ -77,17 +77,19 @@ class FineTuner:
         logits = logits if self.classification else logits[0]
         pred_ids = torch.argmax(logits, dim=-1)
 
-        return pred_ids, labels
+        return pred_ids.to(self.model.dtype).to(self.device), labels.to(self.model.dtype).to(self.device)
 
     def compute_metrics(self, eval_pred):
         """Function for computing evaluation metrics"""
         pred_ids = eval_pred.predictions[0]
 
         if self.mode == Mode.COND_GEN:
+            # Select choice with highest cosine similarity
             pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             predictions = [extract_last_eos_group(p) for p in predictions]
             pred_ids = self.cosine_sim_to_label_indice(predictions, self.dataset['test']['options'])
+
         accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=self.dataset['test']['answer'])
         return {"accuracy": accuracy}
 
