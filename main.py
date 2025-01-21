@@ -6,15 +6,16 @@ dataset_id = 'datasets/diagram-vqa/train'
 
 def train():
     print('Train')
-    finetuner = FineTuner(model_id='google/paligemma2-3b-pt-224',
-                          processor_id='google/paligemma2-3b-pt-224',
-                          mode=Mode.MULTI_CLASS,
+    finetuner = FineTuner(model_id='google/paligemma2-10b-pt-448',
+                          processor_id='google/paligemma2-10b-pt-448',
+                          mode=Mode.SWAG,
                           attention_pooling=False,
                           freeze_vision=True,
                           lora=True,
+                          qlora=True,
                           dataset_id=dataset_id,
                           test_size=4,
-                          image_size=(224, 224),
+                          image_size=(448, 448),
                           batch_size=1,
                           output_folder="../model_checkpoints",
                           output_name='Paligemma-VQA',
