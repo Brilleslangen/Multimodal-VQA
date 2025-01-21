@@ -259,7 +259,6 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
             logits.to(self.dtype)
-            print('loss', logits, labels)
             loss = loss_fct(logits, labels)  # labels: shape (batch_size,)
 
         output = {"loss": loss, "logits": logits}

@@ -126,7 +126,6 @@ class FineTuner:
                                     padding="longest")
 
         inputs = inputs.to(self.model.dtype).to(self.device)
-        print(inputs['input_ids'].dtype, inputs['attention_mask'].dtype, inputs['labels'].dtype)
 
         return inputs
 
