@@ -40,7 +40,7 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
         return batch
 
     def map_to_text_answer(batch):
-        batch['text_answer'] = [batch[f'option{ans}'][i] for i, ans in enumerate(batch['answer'])]
+        batch['text_answer'] = [batch[f'option{ans+1}'][i] for i, ans in enumerate(batch['answer'])]
         return batch
 
     def map_to_label_indices(batch):
@@ -80,13 +80,12 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
     dataset = load_dataset(dataset_id, split='train')
     dataset = dataset.map(resize_images, batched=True)
     dataset = dataset.map(insert_image, batched=True)
+    dataset = dataset.map(map_to_label_indices, batched=True)
 
     if mode == Mode.MULTI_CLASS:
-        dataset = dataset.map(map_to_label_indices, batched=True)
         dataset = dataset.map(preprocess_for_multi_class, batched=True)
 
     elif mode == Mode.SWAG:
-        dataset = dataset.map(map_to_label_indices, batched=True)
         dataset = dataset.map(preprocess_for_SWAG, batched=True)
     else:
         dataset = dataset.map(preprocess_for_conditional_gen, batched=True)

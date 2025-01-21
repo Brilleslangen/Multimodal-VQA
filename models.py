@@ -42,7 +42,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
         # We do not care about the LM head here; we just want the hidden states.
 
         # Custom Classification head + attention layer
-        self.output_attention = nn.Linear(config.text_config.hidden_size, 1 if swag_mode else num_labels)
+        self.output_attention = nn.Linear(config.text_config.hidden_size, 1)
         self.classifier = nn.Linear(config.text_config.hidden_size, 1 if swag_mode else num_labels)
 
         # If your config includes a special token index for image insertion
@@ -177,25 +177,27 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel):
             **kwargs,
         )
 
-        last_hidden_state = lm_outputs.hidden_states[-1]  # shape: (batch_size*4, seq_len, hidden_dim)
+        last_hidden_state = lm_outputs.hidden_states[-1]
 
         # Compute attention scores
-        scores = self.output_attention(last_hidden_state).squeeze(-1)  # (batch_size*4, seq_len)
+        scores = self.output_attention(last_hidden_state).squeeze(-1)
+
         if attention_mask is not None:
             scores = scores.masked_fill(attention_mask == 0, float("-inf"))
 
         # Normalize scores with softmax
         scores = scores - scores.max(dim=-1, keepdim=True).values
-        attention_probs = nn.functional.softmax(scores, dim=-1)  # (batch_size*4, seq_len)
+        attention_probs = nn.functional.softmax(scores, dim=-1)
 
         # Compute weighted sum of hidden states
         pooled_output = torch.bmm(attention_probs.unsqueeze(1), last_hidden_state).squeeze(1)
-        logits = self.classifier(pooled_output).squeeze(-1)  # (batch_size*4,)
+        logits = self.classifier(pooled_output)
 
         # Pack logits back into their respective multiple-choice bundle corresponding to a single question
         if self.swag_mode:
+            logits = logits.squeeze(-1)
             batch_size = logits.size(0) // 4
-            logits = logits.view(batch_size, 4)  # (batch_size, 4)
+            logits = logits.view(batch_size, 4)
 
         loss = None
         if labels is not None:

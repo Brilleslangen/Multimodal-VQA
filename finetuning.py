@@ -86,7 +86,6 @@ class FineTuner:
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             predictions = [extract_last_eos_group(p) for p in predictions]
             pred_ids = self.cosine_sim_to_label_indice(predictions, self.dataset['test']['options'])
-        print(self.dataset['test']['text_answer'], self.dataset['test']['options'])
         accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=self.dataset['test']['answer'])
         return {"accuracy": accuracy}
 
@@ -104,9 +103,16 @@ class FineTuner:
             batch = unfolded_batch
             inputs = self.processor(text=batch['question_option_pair'], images=batch['image'], return_tensors="pt",
                                     padding="longest")
-            inputs['labels'] = torch.tensor(batch['answer'])
-            inputs['labels2'] = torch.tensor(batch['answer'])
-        elif self.mode == Mode.COND_GEN:
+            inputs['labels'] = torch.tensor(batch['answer']).to(self.device)
+        elif self.mode == Mode.MULTI_CLASS:
+            questions = [row['question'] for row in batch]
+            images = [row['image'] for row in batch]
+            answers = [row["answer"] for row in batch]
+
+            inputs = self.processor(text=questions, images=images, return_tensors="pt",
+                                    padding="longest")
+            inputs['labels'] = torch.tensor(answers).to(self.device)
+        else:
             questions = [row['question'] for row in batch]
             images = [row['image'] for row in batch]
             answers = [row["text_answer"] for row in batch]
