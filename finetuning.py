@@ -19,7 +19,7 @@ from models import PaliGemmaForClassification
 class FineTuner:
     MODES = [Mode.COND_GEN, Mode.MULTI_CLASS, Mode.SWAG]
 
-    def __init__(self, model_id: str, processor_id, mode: Mode, freeze_vision: bool, lora: bool,
+    def __init__(self, model_id: str, processor_id, mode: Mode, attention_pooling: bool, freeze_vision: bool, lora: bool,
                  dataset_id: str,
                  test_size: float | int,
                  batch_size: int,
@@ -34,6 +34,7 @@ class FineTuner:
         # Runtime constants
         self.mode = mode
         self.classification = mode != Mode.COND_GEN
+        self.attention_pooling = attention_pooling
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.seed = 42
@@ -84,7 +85,7 @@ class FineTuner:
         pred_ids = eval_pred.predictions[0]
 
         if self.mode == Mode.COND_GEN:
-            # Select choice with highest cosine similarity
+            # Select choice with the highest cosine similarity
             pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             predictions = [extract_last_eos_group(p) for p in predictions]
@@ -107,7 +108,7 @@ class FineTuner:
             batch = unfolded_batch
             inputs = self.processor(text=batch['question_option_pair'], images=batch['image'], return_tensors="pt",
                                     padding="longest")
-            inputs['labels'] = torch.tensor(batch['answer']).to(self.device)
+            inputs['labels'] = torch.tensor(batch['answer'])
         elif self.mode == Mode.MULTI_CLASS:
             questions = [row['question'] for row in batch]
             images = [row['image'] for row in batch]
@@ -115,7 +116,7 @@ class FineTuner:
 
             inputs = self.processor(text=questions, images=images, return_tensors="pt",
                                     padding="longest")
-            inputs['labels'] = torch.tensor(answers).to(self.device)
+            inputs['labels'] = torch.tensor(answers)
         else:
             questions = [row['question'] for row in batch]
             images = [row['image'] for row in batch]
@@ -125,6 +126,7 @@ class FineTuner:
                                     padding="longest")
 
         inputs = inputs.to(self.model.dtype).to(self.device)
+        print(inputs['input_ids'].dtype, inputs['attention_mask'].dtype, inputs['labels'].dtype)
 
         return inputs
 
@@ -179,15 +181,19 @@ class FineTuner:
 
         if qlora:
             bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_type=torch.bfloat16)
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_type=torch.bfloat16)
 
-        if self.mode == Mode.SWAG:
-            model = PaliGemmaForClassification(model_id, swag_mode=True, num_labels=4, torch_dtype=torch.bfloat16)
+        if self.classification:
+            model = PaliGemmaForClassification.from_pretrained(model_id, torch_dtype=torch.bfloat16,
+                                                               attn_implementation='eager',
+                                                               quantization_config=bnb_config if qlora else None,
+                                                               swag_mode=self.mode == Mode.SWAG, num_labels=4,
+                                                               attention_pooling=self.attention_pooling)
         else:
             model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
-                                                                      attn_implementation='eager', 
+                                                                      attn_implementation='eager',
                                                                       quantization_config=bnb_config if qlora else None)
 
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
