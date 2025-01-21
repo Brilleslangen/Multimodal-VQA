@@ -29,7 +29,8 @@ def extract_last_eos_group(text):
     return text.strip()
 
 
-def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.05, image_size=(224, 224)) -> (
+def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, split: str, test_size=0.05,
+                                image_size=(224, 224)) -> (
         DatasetDict, int):
     def resize_images(batch):
         batch['image'] = [image.resize(image_size) for image in batch['image']]
@@ -40,11 +41,13 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
         return batch
 
     def map_to_text_answer(batch):
-        batch['text_answer'] = [batch[f'option{ans+1}'][i] for i, ans in enumerate(batch['answer'])]
+        if split == 'train':
+            batch['text_answer'] = [batch[f'option{ans + 1}'][i] for i, ans in enumerate(batch['answer'])]
         return batch
 
     def map_to_label_indices(batch):
-        batch['answer'] = [ans - 1 for ans in batch['answer']]
+        if split == 'train':
+            batch['answer'] = [ans - 1 for ans in batch['answer']]
         return batch
 
     def preprocess_for_conditional_gen(batch):
@@ -92,6 +95,9 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, test_size=0.0
         dataset = dataset.map(map_to_text_answer, batched=True)
 
     dataset = dataset.remove_columns([f'option{i}' for i in range(1, 5)])
-    train_test_split = dataset.train_test_split(seed=42, test_size=test_size)
 
-    return train_test_split
+    if split == 'train':
+        train_test_split = dataset.train_test_split(seed=42, test_size=test_size)
+        return train_test_split
+
+    return dataset

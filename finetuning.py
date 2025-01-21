@@ -13,11 +13,12 @@ from transformers import (
 
 from peft import get_peft_model, LoraConfig
 from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group, Mode
-from models import PaliGemmaForClassification
+from models import PaliGemmaForClassification, CosineIndexer
 
 
 class FineTuner:
     MODES = [Mode.COND_GEN, Mode.MULTI_CLASS, Mode.SWAG]
+    SEP_TOKEN = '\n<separator>\n'
 
     def __init__(self, model_id: str, processor_id, mode: Mode, attention_pooling: bool, freeze_vision: bool, lora: bool,
                  dataset_id: str,
@@ -26,7 +27,7 @@ class FineTuner:
                  image_size,
                  output_folder: str,
                  output_name: str,
-                 num_epochs: int = 5,
+                 num_epochs: float = 5,
                  wand_logging: bool = True,
                  eval_steps: int = 50,
                  qlora: bool = False,
@@ -43,11 +44,10 @@ class FineTuner:
         self.output_folder = output_folder
         self.output_name = output_name
         self.device = device
-        self.sep_token = '\n<separator>\n'
         # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
 
         # Dataset and model
-        self.dataset = load_and_preprocess_dataset(dataset_id, mode, self.sep_token, test_size, image_size)
+        self.dataset = load_and_preprocess_dataset(dataset_id, mode, FineTuner.SEP_TOKEN, 'train', test_size, image_size)
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
@@ -57,10 +57,9 @@ class FineTuner:
 
         # Cosine similarity model
         if self.mode == Mode.COND_GEN:
-            self.cosine_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-            self.cosine_model.similarity_fn_name = SimilarityFunction.COSINE
+            self.cosine_indexer = CosineIndexer()
         else:
-            self.cosine_model = None
+            self.cosine_indexer = None
 
         # Initialize training logger
         if self.wandb_logging:
@@ -89,10 +88,10 @@ class FineTuner:
             pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
             predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             predictions = [extract_last_eos_group(p) for p in predictions]
-            pred_ids = self.cosine_sim_to_label_indice(predictions, self.dataset['test']['options'])
+            pred_ids = self.cosine_indexer.convert((predictions, self.dataset['test']['options']))
 
         accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=self.dataset['test']['answer'])
-        return {"accuracy": accuracy}
+        return accuracy
 
     def collate_fn(self, batch):
         if self.mode == Mode.SWAG:
@@ -188,12 +187,13 @@ class FineTuner:
             model = PaliGemmaForClassification.from_pretrained(model_id, torch_dtype=torch.bfloat16,
                                                                attn_implementation='eager',
                                                                quantization_config=bnb_config if qlora else None,
-                                                               swag_mode=self.mode == Mode.SWAG, num_labels=4,
+                                                               mode=self.mode, num_labels=4,
                                                                attention_pooling=self.attention_pooling)
         else:
             model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
                                                                       attn_implementation='eager',
                                                                       quantization_config=bnb_config if qlora else None)
+            model.config.mode = self.mode
 
         model.config.keys_to_ignore_at_inference = ["past_key_values"]
 
@@ -208,30 +208,6 @@ class FineTuner:
                 param.requires_grad = False
 
         return model.to(self.device)
-
-    def cosine_sim_to_label_indice(self, predictions, options):
-        """
-        Given a list of string predictions and a list of string options (both in English and Japanese),
-        this function returns the index of the option that has the highest cosine similarity with the predicted text.
-        """
-
-        indices = []
-
-        for pred, opts in zip(predictions, options):
-            # Encode prediction and all options
-            text_list = [pred] + opts  # Combine prediction and options
-            embeddings = self.cosine_model.encode(text_list, convert_to_numpy=True)
-
-            # Compute cosine similarities between prediction and options
-            pred_embedding = embeddings[0].reshape(1, -1)
-            option_embeddings = embeddings[1:]
-
-            similarities = self.cosine_model.similarity(pred_embedding, option_embeddings)
-            best_index = np.argmax(similarities)
-
-            indices.append(best_index)
-
-        return indices
 
     def train(self):
         self.trainer.train()

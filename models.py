@@ -1,18 +1,22 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch import LongTensor, FloatTensor, Tensor
-from typing import Optional, Dict, Union, List
+from typing import Optional, Dict, Union, List, Callable
+
+from sentence_transformers import SentenceTransformer, SimilarityFunction
 from transformers import (
     PaliGemmaConfig,
     PaliGemmaPreTrainedModel,
     AutoModel,
-    AutoModelForCausalLM, Cache, GenerationMixin, StaticCache, HybridCache,
+    AutoModelForCausalLM, Cache, GenerationMixin, StaticCache, HybridCache, PaliGemmaForConditionalGeneration,
+    GenerationConfig, LogitsProcessorList, StoppingCriteriaList,
 )
+from transformers.generation.utils import GenerateOutput
 from transformers.utils import logging
 from transformers.models.paligemma.modeling_paligemma import (
     PaliGemmaMultiModalProjector,
 )
+from helpers import Mode
 
 logger = logging.get_logger(__name__)
 
@@ -24,9 +28,9 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         self.multi_modal_projector = PaliGemmaMultiModalProjector(config)
         self.vocab_size = config.text_config.vocab_size
 
-        self.swag_mode = kwargs.pop('swag_mode', False)
-        self.num_labels = kwargs.pop('num_labels', 4)
-        self.attention_pooling = kwargs.pop('attention_pooling', False)
+        self.config.mode = kwargs.pop('mode', False)
+        self.config.num_labels = kwargs.pop('num_labels', 4)
+        self.config.attention_pooling = kwargs.pop('attention_pooling', False)
 
         language_model = AutoModelForCausalLM.from_config(config=config.text_config)
 
@@ -38,7 +42,8 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
 
         # Custom Classification head + attention layer
         self.output_attention = nn.Linear(config.text_config.hidden_size, 1)
-        self.classifier = nn.Linear(config.text_config.hidden_size, 1 if self.swag_mode else self.num_labels)
+        self.classifier = nn.Linear(config.text_config.hidden_size,
+                                    1 if self.config.mode == Mode.SWAG else self.config.num_labels)
 
         self.post_init()
 
@@ -231,7 +236,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
 
         last_hidden_state = outputs.hidden_states[-1]
 
-        if self.attention_pooling:
+        if self.config.attention_pooling:
             # Compute attention scores
             scores = self.output_attention(last_hidden_state).squeeze(-1)
 
@@ -250,7 +255,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         logits = self.classifier(pooled_output)
 
         # Pack logits back into their respective multiple-choice bundle corresponding to a single question
-        if self.swag_mode:
+        if self.config.mode == Mode.SWAG:
             logits = logits.squeeze(-1)
             batch_size = logits.size(0) // 4
             logits = logits.view(batch_size, 4)
@@ -264,3 +269,33 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         output = {"loss": loss, "logits": logits}
 
         return output if return_dict else (loss, logits)
+
+
+class CosineIndexer:
+    def __init__(self):
+        self.cosine_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        self.cosine_model.similarity_fn_name = SimilarityFunction.COSINE
+
+    def convert(self, predictions, options):
+        """
+        Given a list of string predictions and a list of string options (both in English and Japanese),
+        this function returns the index of the option that has the highest cosine similarity with the predicted text.
+        """
+
+        indices = []
+
+        for pred, opts in zip(predictions, options):
+            # Encode prediction and all options
+            text_list = [pred] + opts  # Combine prediction and options
+            embeddings = self.cosine_model.encode(text_list, convert_to_numpy=True)
+
+            # Compute cosine similarities between prediction and options
+            pred_embedding = embeddings[0].reshape(1, -1)
+            option_embeddings = embeddings[1:]
+
+            similarities = self.cosine_model.similarity(pred_embedding, option_embeddings)
+            best_index = np.argmax(similarities)
+
+            indices.append(best_index)
+
+        return indices
