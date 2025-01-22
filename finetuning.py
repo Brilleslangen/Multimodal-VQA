@@ -81,8 +81,6 @@ class FineTuner:
         """Function for computing evaluation metrics"""
         pred_ids = eval_pred.predictions[0]
 
-        print('compute_metrics', [pred_id.shape for pred_id in pred_ids])
-
         if self.mode == Mode.COND_GEN:
             pred_ids = gen_logits_to_indice(pred_ids, self.processor, self.dataset['test']['options'])
 

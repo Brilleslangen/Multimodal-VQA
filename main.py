@@ -50,7 +50,7 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
     return model_name
 
 
-def evaluate(_model_name, split):
+def evaluate(_model_name, split, batch_size=1):
     print(f'Evaluate {_model_name} on {split}')
 
     config = ParameterConfig.load_from_file(model_output_path + _model_name)
@@ -60,11 +60,10 @@ def evaluate(_model_name, split):
     model.eval()
 
     dataset = load_and_preprocess_dataset(validate_dataset_id, config.mode, FineTuner.SEP_TOKEN, split, image_size)
-    dataset = dataset.select(range(2))
 
     image_names = pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist()
 
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False,
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False))
     all_predictions = []
     with torch.no_grad():
@@ -83,7 +82,7 @@ def evaluate(_model_name, split):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    pd.DataFrame({"filename": image_names[:2], "answer": all_predictions}).to_csv('evaluations/' + _model_name + ".csv", index=False)
+    pd.DataFrame({"filename": image_names, "answer": all_predictions}).to_csv('evaluations/' + _model_name + ".csv", index=False)
 
 
 model_name = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
