@@ -3,24 +3,23 @@ import evaluate
 import numpy as np
 import wandb
 import torch
-from sentence_transformers import SentenceTransformer, SimilarityFunction
 from transformers import (
-    PaliGemmaForConditionalGeneration,
     PaliGemmaProcessor,
     Trainer,
     TrainingArguments,
-    BitsAndBytesConfig)
+)
 
-from peft import get_peft_model, LoraConfig
-from helpers import load_and_preprocess_dataset, select_device, extract_last_eos_group, Mode
-from models import PaliGemmaForClassification, CosineIndexer
+from helpers import select_device, extract_last_eos_group, Mode, CosineIndexer, gen_logits_to_indice
+from models import init_model
+from data_processing import collate_fn, load_and_preprocess_dataset
 
 
 class FineTuner:
     MODES = [Mode.COND_GEN, Mode.MULTI_CLASS, Mode.SWAG]
     SEP_TOKEN = '\n<separator>\n'
 
-    def __init__(self, model_id: str, processor_id, mode: Mode, attention_pooling: bool, freeze_vision: bool, lora: bool,
+    def __init__(self, model_id: str, processor_id, mode: Mode, attention_pooling: bool, freeze_vision: bool,
+                 lora: bool,
                  dataset_id: str,
                  test_size: float | int,
                  batch_size: int,
@@ -30,7 +29,7 @@ class FineTuner:
                  num_epochs: float = 5,
                  wand_logging: bool = True,
                  eval_steps: int = 50,
-                 qlora: bool = False,
+                 quantize: bool = False,
                  device=select_device()):
         # Runtime constants
         self.mode = mode
@@ -47,19 +46,18 @@ class FineTuner:
         # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
 
         # Dataset and model
-        self.dataset = load_and_preprocess_dataset(dataset_id, mode, FineTuner.SEP_TOKEN, 'train', test_size, image_size)
+        self.dataset = load_and_preprocess_dataset(dataset_id, mode, FineTuner.SEP_TOKEN, 'train', test_size,
+                                                   image_size)
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
-        self.model = self.init_model(model_id, freeze_vision=freeze_vision, lora=lora, qlora=qlora)
-        self.processor = PaliGemmaProcessor.from_pretrained(processor_id)
+        self.model, self.processor, self.parameter_config = init_model(model_id, processor_id, mode=mode,
+                                                                       freeze_vision=freeze_vision,
+                                                                       lora=lora,
+                                                                       quantize=quantize,
+                                                                       attention_pooling=attention_pooling,
+                                                                       device=device)
         self.trainer = self.init_trainer()
-
-        # Cosine similarity model
-        if self.mode == Mode.COND_GEN:
-            self.cosine_indexer = CosineIndexer()
-        else:
-            self.cosine_indexer = None
 
         # Initialize training logger
         if self.wandb_logging:
@@ -71,7 +69,7 @@ class FineTuner:
                                         'eval_dataset_size': len(self.dataset['test']),
                                     })
         else:
-            os.environ["WANDB_DISABLED"] = "true"
+            os.environ["WANDB_MODE"] = "disabled"
 
     def preprocess_logits_for_metrics(self, logits, labels):
         logits = logits if self.classification else logits[0]
@@ -83,50 +81,13 @@ class FineTuner:
         """Function for computing evaluation metrics"""
         pred_ids = eval_pred.predictions[0]
 
+        print('compute_metrics', [pred_id.shape for pred_id in pred_ids])
+
         if self.mode == Mode.COND_GEN:
-            # Select choice with the highest cosine similarity
-            pred_ids = np.where(pred_ids != -100, pred_ids, self.processor.tokenizer.pad_token_id)
-            predictions = self.processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
-            predictions = [extract_last_eos_group(p) for p in predictions]
-            pred_ids = self.cosine_indexer.convert((predictions, self.dataset['test']['options']))
+            pred_ids = gen_logits_to_indice(pred_ids, self.processor, self.dataset['test']['options'])
 
         accuracy = evaluate.load('accuracy').compute(predictions=pred_ids, references=self.dataset['test']['answer'])
         return accuracy
-
-    def collate_fn(self, batch):
-        if self.mode == Mode.SWAG:
-            unfolded_batch = {'question_option_pair': [], 'image': [], 'answer': []}
-
-            # 4 New rows for each question
-            for row in batch:
-                unfolded_batch['answer'].append(row['answer'])
-                for pair in row['question_option_pairs']:
-                    unfolded_batch['question_option_pair'].append(pair)
-                    unfolded_batch['image'].append(row['image'])
-
-            batch = unfolded_batch
-            inputs = self.processor(text=batch['question_option_pair'], images=batch['image'], return_tensors="pt",
-                                    padding="longest")
-            inputs['labels'] = torch.tensor(batch['answer'])
-        elif self.mode == Mode.MULTI_CLASS:
-            questions = [row['question'] for row in batch]
-            images = [row['image'] for row in batch]
-            answers = [row["answer"] for row in batch]
-
-            inputs = self.processor(text=questions, images=images, return_tensors="pt",
-                                    padding="longest")
-            inputs['labels'] = torch.tensor(answers)
-        else:
-            questions = [row['question'] for row in batch]
-            images = [row['image'] for row in batch]
-            answers = [row["text_answer"] for row in batch]
-
-            inputs = self.processor(text=questions, images=images, suffix=answers, return_tensors="pt",
-                                    padding="longest")
-
-        inputs = inputs.to(self.model.dtype).to(self.device)
-
-        return inputs
 
     def init_trainer(self):
         training_args = TrainingArguments(
@@ -157,61 +118,16 @@ class FineTuner:
             args=training_args,
             train_dataset=self.dataset['train'],
             eval_dataset=self.dataset['test'],
-            data_collator=self.collate_fn,
+            data_collator=lambda batch: collate_fn(batch, self.model, self.processor, self.mode, training=True),
             compute_metrics=self.compute_metrics,
             preprocess_logits_for_metrics=self.preprocess_logits_for_metrics
         )
 
-    def init_model(self, model_id, freeze_vision=False, lora=True, qlora=False):
-        lora_config = LoraConfig(
-            r=8,
-            target_modules=[
-                "q_proj",
-                "o_proj",
-                "k_proj",
-                "v_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj"
-            ],
-            task_type="CAUSAL_LM",
-        )
-
-        if qlora:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_type=torch.bfloat16)
-
-        if self.classification:
-            model = PaliGemmaForClassification.from_pretrained(model_id, torch_dtype=torch.bfloat16,
-                                                               attn_implementation='eager',
-                                                               quantization_config=bnb_config if qlora else None,
-                                                               mode=self.mode, num_labels=4,
-                                                               attention_pooling=self.attention_pooling)
-        else:
-            model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
-                                                                      attn_implementation='eager',
-                                                                      quantization_config=bnb_config if qlora else None)
-            model.config.mode = self.mode
-
-        model.config.keys_to_ignore_at_inference = ["past_key_values"]
-
-        if lora:
-            model = get_peft_model(model, lora_config)
-
-        if freeze_vision:
-            for param in model.vision_tower.parameters():
-                param.requires_grad = False
-
-            for param in model.multi_modal_projector.parameters():
-                param.requires_grad = False
-
-        return model.to(self.device)
-
     def train(self):
         self.trainer.train()
-        self.trainer.save_model(os.path.join(self.output_folder, self.output_name))
+        folder = os.path.join(self.output_folder, self.output_name)
+        self.trainer.save_model(folder)
+        self.parameter_config.save_to_file(folder)
 
     def evaluate(self):
         return self.trainer.evaluate()

@@ -1,15 +1,97 @@
+import json
 import re
 from enum import Enum
 
+import numpy as np
 import torch
-from datasets import Dataset, load_dataset
-from datasets import DatasetDict
+from sentence_transformers import SentenceTransformer, SimilarityFunction
 
 
 class Mode(Enum):
-    COND_GEN = 'Conditional generation'
-    MULTI_CLASS = 'Classical multi-class classification'
-    SWAG = 'SWAG-based multi-class classification'
+    COND_GEN = 'COND_GEN'
+    MULTI_CLASS = 'MULTI_CLASS'
+    SWAG = 'SWAG'
+
+    def __str__(self):
+        return self.value
+
+
+class ParameterConfig:
+    CONFIG_NAME = 'parameter_config.json'
+
+    def __init__(self, mode: Mode, attention_pooling: bool, freeze_vision: bool = False, lora: bool = True,
+                 quantize: bool = False):
+        self.mode = mode
+        self.attention_pooling = attention_pooling
+        self.freeze_vision = freeze_vision
+        self.lora = lora
+        self.quantize = quantize
+
+    def to_dict(self):
+        """Convert the config to a dictionary format for saving to JSON."""
+        return {
+            "mode": self.mode.value,  # Convert enum to string
+            "attention_pooling": self.attention_pooling,
+            "freeze_vision": self.freeze_vision,
+            "lora": self.lora,
+            "quantize": self.quantize
+        }
+
+    @classmethod
+    def from_dict(cls, config_dict):
+        """Load the config from a dictionary."""
+        return cls(
+            mode=Mode(config_dict["mode"]),  # Convert string back to enum
+            attention_pooling=config_dict["attention_pooling"],
+            freeze_vision=config_dict["freeze_vision"],
+            lora=config_dict["lora"],
+            quantize=config_dict["quantize"]
+        )
+
+    def save_to_file(self, model_path):
+        """Save config to a JSON file."""
+        with open(model_path + "/" + ParameterConfig.CONFIG_NAME, 'w') as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+    @classmethod
+    def load_from_file(cls, model_path):
+        """Load config from a JSON file."""
+        with open(model_path + "/" + ParameterConfig.CONFIG_NAME, 'r') as f:
+            config_dict = json.load(f)
+        return cls.from_dict(config_dict)
+
+    def __repr__(self):
+        return f"ClassificationConfig(mode={self.mode}, attention_pooling={self.attention_pooling}, freeze_vision={self.freeze_vision}, lora={self.lora}, quantize={self.quantize})"
+
+
+class CosineIndexer:
+    def __init__(self):
+        self.cosine_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        self.cosine_model.similarity_fn_name = SimilarityFunction.COSINE
+
+    def convert(self, predictions, options):
+        """
+        Given a list of string predictions and a list of string options (both in English and Japanese),
+        this function returns the index of the option that has the highest cosine similarity with the predicted text.
+        """
+
+        indices = []
+
+        for pred, opts in zip(predictions, options):
+            # Encode prediction and all options
+            text_list = [pred] + opts  # Combine prediction and options
+            embeddings = self.cosine_model.encode(text_list, convert_to_numpy=True)
+
+            # Compute cosine similarities between prediction and options
+            pred_embedding = embeddings[0].reshape(1, -1)
+            option_embeddings = embeddings[1:]
+
+            similarities = self.cosine_model.similarity(pred_embedding, option_embeddings)
+            best_index = np.argmax(similarities)
+
+            indices.append(best_index)
+
+        return indices
 
 
 def select_device():
@@ -29,75 +111,12 @@ def extract_last_eos_group(text):
     return text.strip()
 
 
-def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, split: str, test_size=0.05,
-                                image_size=(224, 224)) -> (
-        DatasetDict, int):
-    def resize_images(batch):
-        batch['image'] = [image.resize(image_size) for image in batch['image']]
-        return batch
+def gen_logits_to_indice(pred_ids, processor, options):
+    # Select choice with the highest cosine similarity
+    pred_ids = np.where(pred_ids != -100, pred_ids, processor.tokenizer.pad_token_id)
+    predictions = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
+    predictions = [extract_last_eos_group(p) for p in predictions]
+    pred_ids = CosineIndexer().convert(predictions, options)
 
-    def insert_image(batch):
-        batch['question'] = [f"<image> {question}" for question in batch['question']]
-        return batch
+    return pred_ids
 
-    def map_to_text_answer(batch):
-        if split == 'train':
-            batch['text_answer'] = [batch[f'option{ans + 1}'][i] for i, ans in enumerate(batch['answer'])]
-        return batch
-
-    def map_to_label_indices(batch):
-        if split == 'train':
-            batch['answer'] = [ans - 1 for ans in batch['answer']]
-        return batch
-
-    def preprocess_for_conditional_gen(batch):
-        """
-        Modify the 'question' field to include all four options concatenated with a separator.
-        E.g., "Question text Options: Option1 | Option2 | Option3 | Option4"
-        """
-        batch['question'] = [question + sep_token
-                             + 'Options: ' + ' | '.join([batch[f'option{i}'][idx] for i in range(1, 5)]) + sep_token
-                             + 'Answer:'
-                             for idx, question in enumerate(batch['question'])]
-        batch['options'] = [[f"{batch[f'option{i}'][idx]}" for i in range(1, 5)]
-                            for idx in range(len(batch['question']))]
-
-        return batch
-
-    def preprocess_for_SWAG(batch):
-        batch['question_option_pairs'] = [[f"{question}{sep_token}Hypothesis: {batch[f'option{i}'][idx]}"
-                                           for i in range(1, 5)] for idx, question in enumerate(batch['question'])]
-        batch.pop('question', None)
-        return batch
-
-    def preprocess_for_multi_class(batch):
-        enumerators = ['A', 'B', 'C', 'D']
-        batch['question'] = [question + sep_token
-                             + 'Options: ' + ' | '.join([enumerators[i - 1] + ") " + batch[f'option{i}'][idx]
-                                                         for i in range(1, 5)]) + sep_token
-                             + 'Answer:'
-                             for idx, question in enumerate(batch['question'])]
-
-        return batch
-
-    dataset = load_dataset(dataset_id, split='train')
-    dataset = dataset.map(resize_images, batched=True)
-    dataset = dataset.map(insert_image, batched=True)
-    dataset = dataset.map(map_to_label_indices, batched=True)
-
-    if mode == Mode.MULTI_CLASS:
-        dataset = dataset.map(preprocess_for_multi_class, batched=True)
-
-    elif mode == Mode.SWAG:
-        dataset = dataset.map(preprocess_for_SWAG, batched=True)
-    else:
-        dataset = dataset.map(preprocess_for_conditional_gen, batched=True)
-        dataset = dataset.map(map_to_text_answer, batched=True)
-
-    dataset = dataset.remove_columns([f'option{i}' for i in range(1, 5)])
-
-    if split == 'train':
-        train_test_split = dataset.train_test_split(seed=42, test_size=test_size)
-        return train_test_split
-
-    return dataset

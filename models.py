@@ -3,20 +3,20 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Union, List, Callable
 
+from peft import LoraConfig, get_peft_model
 from sentence_transformers import SentenceTransformer, SimilarityFunction
 from transformers import (
     PaliGemmaConfig,
     PaliGemmaPreTrainedModel,
     AutoModel,
     AutoModelForCausalLM, Cache, GenerationMixin, StaticCache, HybridCache, PaliGemmaForConditionalGeneration,
-    GenerationConfig, LogitsProcessorList, StoppingCriteriaList,
+    BitsAndBytesConfig, PaliGemmaProcessor,
 )
-from transformers.generation.utils import GenerateOutput
 from transformers.utils import logging
 from transformers.models.paligemma.modeling_paligemma import (
     PaliGemmaMultiModalProjector,
 )
-from helpers import Mode
+from helpers import Mode, select_device, ParameterConfig
 
 logger = logging.get_logger(__name__)
 
@@ -28,9 +28,9 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         self.multi_modal_projector = PaliGemmaMultiModalProjector(config)
         self.vocab_size = config.text_config.vocab_size
 
-        self.config.mode = kwargs.pop('mode', False)
-        self.config.num_labels = kwargs.pop('num_labels', 4)
-        self.config.attention_pooling = kwargs.pop('attention_pooling', False)
+        self.mode = kwargs.pop('mode', Mode.MULTI_CLASS)
+        self.num_labels = kwargs.pop('num_labels', 4)
+        self.attention_pooling = kwargs.pop('attention_pooling', False)
 
         language_model = AutoModelForCausalLM.from_config(config=config.text_config)
 
@@ -43,7 +43,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         # Custom Classification head + attention layer
         self.output_attention = nn.Linear(config.text_config.hidden_size, 1)
         self.classifier = nn.Linear(config.text_config.hidden_size,
-                                    1 if self.config.mode == Mode.SWAG else self.config.num_labels)
+                                    1 if self.mode == Mode.SWAG else self.num_labels)
 
         self.post_init()
 
@@ -236,7 +236,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
 
         last_hidden_state = outputs.hidden_states[-1]
 
-        if self.config.attention_pooling:
+        if self.attention_pooling:
             # Compute attention scores
             scores = self.output_attention(last_hidden_state).squeeze(-1)
 
@@ -255,7 +255,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         logits = self.classifier(pooled_output)
 
         # Pack logits back into their respective multiple-choice bundle corresponding to a single question
-        if self.config.mode == Mode.SWAG:
+        if self.mode == Mode.SWAG:
             logits = logits.squeeze(-1)
             batch_size = logits.size(0) // 4
             logits = logits.view(batch_size, 4)
@@ -271,31 +271,51 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         return output if return_dict else (loss, logits)
 
 
-class CosineIndexer:
-    def __init__(self):
-        self.cosine_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-        self.cosine_model.similarity_fn_name = SimilarityFunction.COSINE
+def init_model(model_id, processor_id, mode, attention_pooling, freeze_vision=False, lora=True, quantize=False,
+               device=select_device()):
+    lora_config = LoraConfig(
+        r=8,
+        target_modules=[
+            "q_proj",
+            "o_proj",
+            "k_proj",
+            "v_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj"
+        ],
+        task_type="CAUSAL_LM",
+    )
 
-    def convert(self, predictions, options):
-        """
-        Given a list of string predictions and a list of string options (both in English and Japanese),
-        this function returns the index of the option that has the highest cosine similarity with the predicted text.
-        """
+    if quantize:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_type=torch.bfloat16)
 
-        indices = []
+    if mode == Mode.SWAG or mode == mode.MULTI_CLASS:
+        model = PaliGemmaForClassification.from_pretrained(model_id, torch_dtype=torch.bfloat16,
+                                                           attn_implementation='eager',
+                                                           quantization_config=bnb_config if quantize else None,
+                                                           mode=mode, num_labels=4,
+                                                           attention_pooling=attention_pooling)
+    else:
+        model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
+                                                                  attn_implementation='eager',
+                                                                  quantization_config=bnb_config if quantize else None)
 
-        for pred, opts in zip(predictions, options):
-            # Encode prediction and all options
-            text_list = [pred] + opts  # Combine prediction and options
-            embeddings = self.cosine_model.encode(text_list, convert_to_numpy=True)
+    model.config.keys_to_ignore_at_inference = ["past_key_values"]
 
-            # Compute cosine similarities between prediction and options
-            pred_embedding = embeddings[0].reshape(1, -1)
-            option_embeddings = embeddings[1:]
+    processor = PaliGemmaProcessor.from_pretrained(processor_id)
 
-            similarities = self.cosine_model.similarity(pred_embedding, option_embeddings)
-            best_index = np.argmax(similarities)
+    if lora:
+        model = get_peft_model(model, lora_config)
 
-            indices.append(best_index)
+    if freeze_vision:
+        for param in model.vision_tower.parameters():
+            param.requires_grad = False
 
-        return indices
+        for param in model.multi_modal_projector.parameters():
+            param.requires_grad = False
+
+    return model.to(device), processor, ParameterConfig(mode, attention_pooling, freeze_vision, lora, quantize)
