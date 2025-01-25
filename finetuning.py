@@ -17,6 +17,7 @@ from data_processing import collate_fn, load_and_preprocess_dataset
 class FineTuner:
     MODES = [Mode.COND_GEN, Mode.MULTI_CLASS, Mode.SWAG]
     SEP_TOKEN = '\n<separator>\n'
+    # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
 
     def __init__(self, model_id: str, processor_id, mode: Mode, attention_pooling: bool, freeze_vision: bool,
                  lora: bool,
@@ -33,6 +34,7 @@ class FineTuner:
                  device=select_device()):
         # Runtime constants
         self.mode = mode
+        self.lora = lora
         self.classification = mode != Mode.COND_GEN
         self.attention_pooling = attention_pooling
         self.batch_size = batch_size
@@ -43,7 +45,6 @@ class FineTuner:
         self.output_folder = output_folder
         self.output_name = output_name
         self.device = device
-        # According to https://ai.google.dev/gemma/docs/agile_classifiers#text_preprocessing_and_separator_tokens
 
         # Dataset and model
         self.dataset = load_and_preprocess_dataset(dataset_id, mode, FineTuner.SEP_TOKEN, 'train', test_size,
@@ -51,7 +52,7 @@ class FineTuner:
         self.metric_names = ('accuracy',)  # 'recall', 'precision', 'f1'
 
         # Tokenizer, model and trainer
-        self.model, self.processor, self.parameter_config = init_model(model_id, processor_id, mode=mode,
+        self.model, self.processor, self.parameter_config = init_model(model_id, output_name, processor_id, mode=mode,
                                                                        freeze_vision=freeze_vision,
                                                                        lora=lora,
                                                                        quantize=quantize,
@@ -124,8 +125,17 @@ class FineTuner:
     def train(self):
         self.trainer.train()
         folder = os.path.join(self.output_folder, self.output_name)
-        self.trainer.save_model(folder)
+        os.makedirs(folder, exist_ok=True)
+
+        model = self.trainer.model
+
+        if self.lora:
+            model = self.trainer.model.merge_and_unload()
+
+        model.save_pretrained(folder)
         self.parameter_config.save_to_file(folder)
+
+        print(f"Model and config saved to {folder}")
 
     def evaluate(self):
         return self.trainer.evaluate()

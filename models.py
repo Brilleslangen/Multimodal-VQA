@@ -1,16 +1,14 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Union, List, Callable
+from typing import Optional, Union, List
 
 from peft import LoraConfig, get_peft_model
-from sentence_transformers import SentenceTransformer, SimilarityFunction
 from transformers import (
     PaliGemmaConfig,
     PaliGemmaPreTrainedModel,
     AutoModel,
     AutoModelForCausalLM, Cache, GenerationMixin, StaticCache, HybridCache, PaliGemmaForConditionalGeneration,
-    BitsAndBytesConfig, PaliGemmaProcessor,
+    BitsAndBytesConfig, PaliGemmaProcessor
 )
 from transformers.utils import logging
 from transformers.models.paligemma.modeling_paligemma import (
@@ -271,7 +269,7 @@ class PaliGemmaForClassification(PaliGemmaPreTrainedModel, GenerationMixin):
         return output if return_dict else (loss, logits)
 
 
-def init_model(model_id, processor_id, mode, attention_pooling, freeze_vision=False, lora=True, quantize=False,
+def init_model(model_id, model_name, processor_id, mode, attention_pooling, freeze_vision=False, lora=True, quantize=False,
                device=select_device()):
     lora_config = LoraConfig(
         r=8,
@@ -299,6 +297,9 @@ def init_model(model_id, processor_id, mode, attention_pooling, freeze_vision=Fa
                                                            quantization_config=bnb_config if quantize else None,
                                                            mode=mode, num_labels=4,
                                                            attention_pooling=attention_pooling)
+        model.register_module('output_attention', model.output_attention)
+        model.register_module('classifier', model.classifier)
+        model.config._name_or_path = model_name
     else:
         model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16,
                                                                   attn_implementation='eager',
