@@ -117,6 +117,7 @@ def gen_logits_to_indice(pred_ids, processor, options):
     predictions = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
     predictions = [extract_last_eos_group(p) for p in predictions]
     pred_ids = CosineIndexer().convert(predictions, options)
+    print(pred_ids, predictions, options)
 
     return pred_ids
 

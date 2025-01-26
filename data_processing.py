@@ -122,7 +122,7 @@ def collate_fn(batch, model, processor, mode, training: bool = True, include_ima
         if training:
             answers = [row["text_answer"] for row in batch]
             inputs = processor(text=questions, images=images, suffix=answers, return_tensors="pt",
-                           padding="longest")
+                               padding="longest")
         else:
             inputs = processor(text=questions, images=images, return_tensors="pt", padding="longest")
             inputs['options'] = [row['options'] for row in batch]

@@ -39,12 +39,12 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
                           dataset_id=dataset_folder + 'train',
                           test_size=1,
                           image_size=(image_size, image_size),
-                          batch_size=8,
+                          batch_size=1,
                           output_folder=model_output_path,
                           output_name=_model_name,
                           num_epochs=2,
                           wand_logging=True,
-                          eval_steps=0)
+                          eval_steps=1)
     finetuner.train()
     results = finetuner.evaluate()
     print(results, '\n')
@@ -103,8 +103,7 @@ def evaluate(_model_path, split, batch_size=1, labeled=False):
 
     # Test
     if labeled:
-        labels = dataset['answer']
-        acc = eval.load('accuracy').compute(predictions=all_predictions, references=labels)
+        acc = eval.load('accuracy').compute(predictions=all_predictions, references=answers)
         print(acc)
 
     # Save predictions
