@@ -86,7 +86,7 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, split: str, t
     return dataset
 
 
-def collate_fn(batch, model, processor, mode, training: bool = True, include_image_name=False):
+def collate_fn(batch, model, processor, mode, training: bool = True, include_image_name=False, eval_debug=False):
     if mode == Mode.SWAG:
         unfolded_batch = {'question_option_pair': [], 'images': [], 'answer': []}
 
@@ -125,11 +125,16 @@ def collate_fn(batch, model, processor, mode, training: bool = True, include_ima
                            padding="longest")
         else:
             inputs = processor(text=questions, images=images, return_tensors="pt", padding="longest")
+            inputs['options'] = [row['options'] for row in batch]
     else:
         raise ValueError(f"Unknown mode {mode}")
 
     inputs = inputs.to(model.dtype).to(model.device)
+
     if include_image_name:
-        inputs['image_name'] = [row['image_name'] for row in batch]
+        inputs['image_names'] = [row['image_name'] for row in batch]
+
+    if eval_debug:
+        inputs['answers'] = [row['answer'] for row in batch]
 
     return inputs

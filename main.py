@@ -69,27 +69,35 @@ def evaluate(_model_path, split, batch_size=1, labeled=False):
     # Prepare dataset
     dataset = load_and_preprocess_dataset(dataset_id=dataset_folder + split, mode=config.mode,
                                           sep_token=FineTuner.SEP_TOKEN, split=split,
-                                          image_size=(image_size, image_size), test_size=0).select(range(100))
+                                          image_size=(image_size, image_size), test_size=0)
 
+    dataset = dataset.select(range(100))
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False,
-                                                            include_image_name=True))
+                                                            include_image_name=True, eval_debug=labeled))
 
     # Evaluate
     image_names = []
     all_predictions = []
+    answers = []
     model.eval()
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", unit="batch")):
-            image_batch_names = batch.pop('image_name')
+            options = batch.pop('options')
+            image_batch_names = batch.pop('image_names')
+
+            if labeled:
+                answers.extend(batch.pop('answers'))
+
             outputs = model(**batch)
             predictions = torch.argmax(outputs['logits'], dim=-1).cpu().numpy()
 
             if config.mode == Mode.COND_GEN:
-                predictions = gen_logits_to_indice(predictions, processor, dataset['options'])
+                predictions = gen_logits_to_indice(predictions, processor, options)
 
             predictions = [int(i + 1) for i in predictions]
+
             image_names.extend(image_batch_names)
             all_predictions.extend(predictions)
 
