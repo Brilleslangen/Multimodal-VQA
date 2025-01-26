@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import pandas as pd
+from datasets import Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import pipeline, AutoModel, PaliGemmaProcessor, PaliGemmaPreTrainedModel, \
@@ -65,7 +66,8 @@ def evaluate(_model_path, split, batch_size=1):
     processor = PaliGemmaProcessor.from_pretrained(model_id)
 
     # Prepare dataset
-    dataset = load_and_preprocess_dataset(validate_dataset_id, config.mode, FineTuner.SEP_TOKEN, split, image_size)
+    dataset: Dataset = load_and_preprocess_dataset(validate_dataset_id, config.mode, FineTuner.SEP_TOKEN, split,
+                                                   image_size).select(range(10))
     image_names = pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist()
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False))
@@ -76,15 +78,15 @@ def evaluate(_model_path, split, batch_size=1):
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", unit="batch")):
-            outputs = model(**batch)
-            predictions = torch.argmax(outputs["logits"], dim=-1)
-            all_predictions.append(predictions.cpu().numpy()[0])
+            outputs = model.forward(**batch)
+            predictions = torch.argmax(outputs['logits'], dim=-1)
 
-    # Post-process predictions from sequence logits to indices for conditional generation
-    if config.mode == Mode.COND_GEN:
-        all_predictions = gen_logits_to_indice(all_predictions[0], processor, dataset['options'])
-        all_predictions = [p.numpy().tolist() for p in all_predictions]
-    all_predictions = [i + 1 for i in all_predictions]
+            if config.mode == Mode.COND_GEN:
+                predictions = gen_logits_to_indice(predictions, processor, dataset['options'])
+
+            predictions = [int(i + 1) for i in predictions]
+            print(predictions)
+            all_predictions.extend(predictions)
 
     # Save predictions
     output_dir = "evaluations"
@@ -92,26 +94,26 @@ def evaluate(_model_path, split, batch_size=1):
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    pd.DataFrame({"filename": image_names,
+    pd.DataFrame({"filename": image_names[:10],
                   "answer": all_predictions}).to_csv(output_file, index=False)
 
     print('Evaluation complete and saved to evaluations/' + _model_path.split('/')[-1] + ".csv")
 
 
 # Conditional generation
-model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+# model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+evaluate(model_output_path + "PG2-3b-pt-224-COND_GEN", 'validate')
 
 # Multi-class classification with and without attention pooling
-model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
-
-model_path = train("", Mode.MULTI_CLASS, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
-
-# SWAG with and without attention pooling
-model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
-
-model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+# model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+# evaluate(model_path, 'validate')
+#
+# model_path = train("", Mode.MULTI_CLASS, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
+# evaluate(model_path, 'validate')
+#
+# # SWAG with and without attention pooling
+# model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+# evaluate(model_path, 'validate')
+#
+# model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
+# evaluate(model_path, 'validate')
