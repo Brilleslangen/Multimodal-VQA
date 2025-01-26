@@ -15,7 +15,7 @@ from data_processing import load_and_preprocess_dataset, collate_fn
 from models import init_model, PaliGemmaForClassification
 from helpers import Mode, select_device, CosineIndexer, ParameterConfig, gen_logits_to_indice
 
-image_size = 224
+image_size = 448
 model_id = f'google/paligemma2-10b-pt-{image_size}'
 dataset_folder = 'datasets/diagram-vqa/'
 
@@ -85,8 +85,12 @@ def evaluate(_model_path, split, batch_size=1):
             if config.mode == Mode.COND_GEN:
                 predictions = gen_logits_to_indice(predictions, processor, dataset['options'])
 
+            if hasattr(batch['images'], 'filename') and batch['images'].filename:
+                # Extract filename using os.path to handle different OS path formats
+                batch['file_name'] = os.path.basename(batch['images'].filename)
+
             predictions = [int(i + 1) for i in predictions]
-            print(predictions)
+            print(batch['file_name'], predictions)
             all_predictions.extend(predictions)
 
     # Save predictions
@@ -103,7 +107,7 @@ def evaluate(_model_path, split, batch_size=1):
 
 # Conditional generation
 # model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate('models-pt/PG2-3b-pt-224-COND_GEN', 'train')
+evaluate('models-pt/PG2-10b-pt-448-COND_GEN-ATT', 'train')
 
 # Multi-class classification with and without attention pooling
 # model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
