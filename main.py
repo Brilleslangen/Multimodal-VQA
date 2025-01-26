@@ -51,7 +51,7 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
     return model_output_path + _model_name
 
 
-def evaluate(_model_path, split, batch_size=8):
+def evaluate(_model_path, split, batch_size=1):
     print(f'Evaluate {_model_path} on {split}')
 
     # Load model & processor
@@ -61,11 +61,11 @@ def evaluate(_model_path, split, batch_size=8):
     else:
         model = PaliGemmaForClassification.from_pretrained(_model_path, mode=config.mode, num_labels=4,
                                                            attention_pooling=config.attention_pooling)
-
+    model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     processor = PaliGemmaProcessor.from_pretrained(model_id)
 
     # Prepare dataset
-    dataset = load_and_preprocess_dataset(validate_dataset_id, config.mode, FineTuner.SEP_TOKEN, split, image_size)
+    dataset = load_and_preprocess_dataset(dataset_id=validate_dataset_id,mode= config.mode, sep_token=FineTuner.SEP_TOKEN, split=split, image_size=(image_size, image_size))
     image_names = pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist()
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False))
@@ -100,7 +100,7 @@ def evaluate(_model_path, split, batch_size=8):
 
 # Conditional generation
 #model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-#evaluate(model_path, 'validate')
+evaluate('models-pt/PG2-10b-pt-448-COND_GEN-ATT', 'validate')
 
 # Multi-class classification with and without attention pooling
 #model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
@@ -110,7 +110,7 @@ def evaluate(_model_path, split, batch_size=8):
 #evaluate(model_path, 'validate')
 
 # SWAG with and without attention pooling
-model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+#model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
 #evaluate(model_path, 'validate')
 
 #model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)

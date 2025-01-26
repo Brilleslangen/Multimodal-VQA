@@ -101,8 +101,10 @@ def collate_fn(batch, model, processor, mode, training: bool = True):
         batch = unfolded_batch
         inputs = processor(text=batch['question_option_pair'], images=batch['images'], return_tensors="pt",
                            padding="longest")
+
         if training:
             inputs['labels'] = torch.tensor(batch['answer'])
+            inputs.to(model.device)
 
     elif mode == Mode.MULTI_CLASS:
         questions_options = [row['text'] for row in batch]
