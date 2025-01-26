@@ -104,7 +104,6 @@ def collate_fn(batch, model, processor, mode, training: bool = True):
 
         if training:
             inputs['labels'] = torch.tensor(batch['answer'])
-            inputs.to(model.device)
 
     elif mode == Mode.MULTI_CLASS:
         questions_options = [row['text'] for row in batch]
