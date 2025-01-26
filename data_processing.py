@@ -7,6 +7,7 @@ from helpers import Mode
 
 def metadata_csv_to_jsonl(in_path, out_path):
     metadata = pd.read_csv(in_path)
+    metadata['image_name'] = metadata['file_name']
     metadata.to_json(out_path, force_ascii=False, orient="records", lines=True)
 
 
@@ -85,7 +86,7 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, split: str, t
     return dataset
 
 
-def collate_fn(batch, model, processor, mode, training: bool = True):
+def collate_fn(batch, model, processor, mode, training: bool = True, include_image_name=False):
     if mode == Mode.SWAG:
         unfolded_batch = {'question_option_pair': [], 'images': [], 'answer': []}
 
@@ -128,5 +129,7 @@ def collate_fn(batch, model, processor, mode, training: bool = True):
         raise ValueError(f"Unknown mode {mode}")
 
     inputs = inputs.to(model.dtype).to(model.device)
+    if include_image_name:
+        inputs['image_name'] = [row['image_name'] for row in batch]
 
     return inputs

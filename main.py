@@ -2,6 +2,7 @@ import os
 import time
 
 import numpy as np
+import evaluate as eval
 import pandas as pd
 from datasets import Dataset
 from torch.utils.data import DataLoader
@@ -11,7 +12,7 @@ from transformers import pipeline, AutoModel, PaliGemmaProcessor, PaliGemmaPreTr
 import torch
 
 from finetuning import FineTuner
-from data_processing import load_and_preprocess_dataset, collate_fn
+from data_processing import load_and_preprocess_dataset, collate_fn, metadata_csv_to_jsonl
 from models import init_model, PaliGemmaForClassification
 from helpers import Mode, select_device, CosineIndexer, ParameterConfig, gen_logits_to_indice
 
@@ -51,7 +52,7 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
     return model_output_path + _model_name
 
 
-def evaluate(_model_path, split, batch_size=1):
+def evaluate(_model_path, split, batch_size=1, labeled=False):
     print(f'Evaluate {_model_path} on {split}')
     device = select_device()
 
@@ -69,29 +70,34 @@ def evaluate(_model_path, split, batch_size=1):
     dataset = load_and_preprocess_dataset(dataset_id=dataset_folder + split, mode=config.mode,
                                           sep_token=FineTuner.SEP_TOKEN, split=split,
                                           image_size=(image_size, image_size), test_size=0).select(range(100))
-    image_names = sorted(pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist())
+
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                            collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False))
+                            collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False,
+                                                            include_image_name=True))
 
     # Evaluate
+    image_names = []
     all_predictions = []
     model.eval()
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", unit="batch")):
+            image_batch_names = batch.pop('image_name')
             outputs = model(**batch)
             predictions = torch.argmax(outputs['logits'], dim=-1).cpu().numpy()
 
             if config.mode == Mode.COND_GEN:
                 predictions = gen_logits_to_indice(predictions, processor, dataset['options'])
 
-            if hasattr(batch['images'], 'filename') and batch['images'].filename:
-                # Extract filename using os.path to handle different OS path formats
-                batch['file_name'] = os.path.basename(batch['images'].filename)
-
             predictions = [int(i + 1) for i in predictions]
-            print(batch['file_name'], predictions)
+            image_names.extend(image_batch_names)
             all_predictions.extend(predictions)
+
+    # Test
+    if labeled:
+        labels = dataset['answer']
+        acc = eval.load('accuracy').compute(predictions=all_predictions, references=labels)
+        print(acc)
 
     # Save predictions
     output_dir = "evaluations"
@@ -107,7 +113,11 @@ def evaluate(_model_path, split, batch_size=1):
 
 # Conditional generation
 # model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate('models-pt/PG2-10b-pt-448-COND_GEN-ATT', 'train')
+evaluate('models-pt/PG2-10b-pt-448-COND_GEN-ATT', 'train', labeled=True)
+
+# metadata_csv_to_jsonl('datasets/diagram-vqa/train-metadata.csv', 'datasets/diagram-vqa/train/metadata.jsonl')
+# metadata_csv_to_jsonl('datasets/diagram-vqa/validate-metadata.csv', 'datasets/diagram-vqa/validate/metadata.jsonl')
+# metadata_csv_to_jsonl('datasets/diagram-vqa/test-metadata.csv', 'datasets/diagram-vqa/test/metadata.jsonl')
 
 # Multi-class classification with and without attention pooling
 # model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
