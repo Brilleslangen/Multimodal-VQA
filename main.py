@@ -92,15 +92,15 @@ def evaluate(_model_path, split, batch_size=8):
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    pd.DataFrame({"filename": image_names,
+    pd.DataFrame({"file_name": image_names,
                   "answer": all_predictions}).to_csv(output_file, index=False)
 
     print('Evaluation complete and saved to evaluations/' + _model_path.split('/')[-1] + ".csv")
 
 
 # Conditional generation
-model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+#model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+#evaluate(model_path, 'validate')
 
 # Multi-class classification with and without attention pooling
 #model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
@@ -110,7 +110,7 @@ evaluate(model_path, 'validate')
 #evaluate(model_path, 'validate')
 
 # SWAG with and without attention pooling
-#model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
 #evaluate(model_path, 'validate')
 
 #model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
