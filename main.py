@@ -15,17 +15,16 @@ from data_processing import load_and_preprocess_dataset, collate_fn
 from models import init_model, PaliGemmaForClassification
 from helpers import Mode, select_device, CosineIndexer, ParameterConfig, gen_logits_to_indice
 
-image_size = 448
+image_size = 224
 model_id = f'google/paligemma2-10b-pt-{image_size}'
-train_dataset_id = 'datasets/diagram-vqa/train'
-validate_dataset_id = 'datasets/diagram-vqa/validate'
+dataset_folder = 'datasets/diagram-vqa/'
 
 model_output_path = 'models-pt/'
 
 
 def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, freeze_vision=False, lora=True,
           quantize=False):
-    model_name_extras = "ATT" + model_name_extras
+    model_name_extras = ("ATT" if attention_pooling else "") + model_name_extras
     _model_name = "PG2" + model_id[17:] + '-' + mode.value + (("-" + model_name_extras) if model_name_extras else "")
 
     print(f'Train {_model_name}')
@@ -36,7 +35,7 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
                           freeze_vision=freeze_vision,
                           lora=lora,
                           quantize=quantize,
-                          dataset_id=train_dataset_id,
+                          dataset_id=dataset_folder + 'train',
                           test_size=1,
                           image_size=(image_size, image_size),
                           batch_size=8,
@@ -50,29 +49,6 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
     print(results, '\n')
 
     return model_output_path + _model_name
-
-
-def evaluate2(_model_path, split, batch_size=1):
-    print(f'Train {_model_path}')
-    config = ParameterConfig.load_from_file(_model_path)
-    finetuner = FineTuner(model_id=model_id,
-                          processor_id=model_id,
-                          mode=config.mode,
-                          attention_pooling=config.attention_pooling,
-                          freeze_vision=config.freeze_vision,
-                          lora=config.lora,
-                          quantize=config.quantize,
-                          dataset_id=train_dataset_id,
-                          test_size=10,
-                          image_size=(image_size, image_size),
-                          batch_size=8,
-                          output_folder=model_output_path,
-                          output_name='no-name',
-                          num_epochs=2,
-                          wand_logging=True,
-                          eval_steps=0)
-    results = finetuner.evaluate()
-    print(results, '\n')
 
 
 def evaluate(_model_path, split, batch_size=1):
@@ -90,10 +66,10 @@ def evaluate(_model_path, split, batch_size=1):
     processor = PaliGemmaProcessor.from_pretrained(model_id)
 
     # Prepare dataset
-    dataset = load_and_preprocess_dataset(dataset_id=validate_dataset_id, mode=config.mode,
+    dataset = load_and_preprocess_dataset(dataset_id=dataset_folder + split, mode=config.mode,
                                           sep_token=FineTuner.SEP_TOKEN, split=split,
-                                          image_size=(image_size, image_size))
-    image_names = pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist()
+                                          image_size=(image_size, image_size), test_size=0).select(range(100))
+    image_names = sorted(pd.read_csv(f'datasets/diagram-vqa/{split}-metadata.csv')['file_name'].tolist())
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                             collate_fn=lambda b: collate_fn(b, model, processor, config.mode, training=False))
 
@@ -103,8 +79,8 @@ def evaluate(_model_path, split, batch_size=1):
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", unit="batch")):
-            outputs = model.forward(**batch)
-            predictions = torch.argmax(outputs['logits'], dim=-1)
+            outputs = model(**batch)
+            predictions = torch.argmax(outputs['logits'], dim=-1).cpu().numpy()
 
             if config.mode == Mode.COND_GEN:
                 predictions = gen_logits_to_indice(predictions, processor, dataset['options'])
@@ -125,11 +101,9 @@ def evaluate(_model_path, split, batch_size=1):
     print('Evaluation complete and saved to evaluations/' + _model_path.split('/')[-1] + ".csv")
 
 
-evaluate2('models-pt/PG2-3b-pt-224-COND_GEN', 'train')
-
 # Conditional generation
 # model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-# evaluate('models-pt/PG2-3b-pt-224-COND_GEN', 'validate')
+evaluate('models-pt/PG2-3b-pt-224-COND_GEN', 'train')
 
 # Multi-class classification with and without attention pooling
 # model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)

@@ -78,7 +78,7 @@ def load_and_preprocess_dataset(dataset_id, mode: Mode, sep_token, split: str, t
 
     dataset = dataset.remove_columns([f'option{i}' for i in range(1, 5)])
 
-    if split == 'train':
+    if split == 'train' and test_size != 0:
         train_test_split = dataset.train_test_split(seed=42, test_size=test_size)
         return train_test_split
 
