@@ -14,8 +14,8 @@ from data_processing import load_and_preprocess_dataset, collate_fn
 from models import init_model, PaliGemmaForClassification
 from helpers import Mode, select_device, CosineIndexer, ParameterConfig, gen_logits_to_indice
 
-image_size = 224
-model_id = f'google/paligemma2-3b-pt-{image_size}'
+image_size = 448
+model_id = f'google/paligemma2-10b-pt-{image_size}'
 train_dataset_id = 'datasets/diagram-vqa/train'
 validate_dataset_id = 'datasets/diagram-vqa/validate'
 
@@ -38,11 +38,11 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
                           dataset_id=train_dataset_id,
                           test_size=1,
                           image_size=(image_size, image_size),
-                          batch_size=1,
+                          batch_size=8,
                           output_folder=model_output_path,
                           output_name=_model_name,
-                          num_epochs=0.000125,
-                          wand_logging=False,
+                          num_epochs=2,
+                          wand_logging=True,
                           eval_steps=0)
     finetuner.train()
     results = finetuner.evaluate()
@@ -51,7 +51,7 @@ def train(model_name_extras="", mode=Mode.COND_GEN, attention_pooling=False, fre
     return model_output_path + _model_name
 
 
-def evaluate(_model_path, split, batch_size=1):
+def evaluate(_model_path, split, batch_size=8):
     print(f'Evaluate {_model_path} on {split}')
 
     # Load model & processor
@@ -88,7 +88,7 @@ def evaluate(_model_path, split, batch_size=1):
 
     # Save predictions
     output_dir = "evaluations"
-    output_file = output_dir + _model_path.split('/')[-1] + ".csv"
+    output_file = output_dir + '/' +  _model_path.split('/')[-1] + ".csv"
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -103,15 +103,15 @@ model_path = train("", Mode.COND_GEN, attention_pooling=False, freeze_vision=Tru
 evaluate(model_path, 'validate')
 
 # Multi-class classification with and without attention pooling
-model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+#model_path = train("", Mode.MULTI_CLASS, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+#evaluate(model_path, 'validate')
 
-model_path = train("", Mode.MULTI_CLASS, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+#model_path = train("", Mode.MULTI_CLASS, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
+#evaluate(model_path, 'validate')
 
 # SWAG with and without attention pooling
-model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+#model_path = train("", Mode.SWAG, attention_pooling=False, freeze_vision=True, lora=True, quantize=False)
+#evaluate(model_path, 'validate')
 
-model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
-evaluate(model_path, 'validate')
+#model_path = train("", Mode.SWAG, attention_pooling=True, freeze_vision=True, lora=True, quantize=False)
+#evaluate(model_path, 'validate')
