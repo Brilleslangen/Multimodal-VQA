@@ -90,11 +90,10 @@ def evaluate(_model_path, split, batch_size=1, labeled=False):
             if labeled:
                 answers.extend(batch.pop('answers'))
 
-            outputs = model(**batch)
-            predictions = torch.argmax(outputs['logits'], dim=-1).cpu().numpy()
+            outputs = model.generate(**batch)
 
             if config.mode == Mode.COND_GEN:
-                predictions = gen_logits_to_indice(predictions, processor, options)
+                predictions = gen_logits_to_indice(outputs.cpu().numpy(), processor, options)
 
             predictions = [int(i + 1) for i in predictions]
 
