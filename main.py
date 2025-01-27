@@ -88,7 +88,7 @@ def evaluate(_model_path, split, batch_size=1, labeled=False):
             image_batch_names = batch.pop('image_names')
 
             if labeled:
-                answers.extend(batch.pop('answers'))
+                answers.extend([int(i + 1) for i in batch.pop('answers')])
 
             outputs = model.generate(**batch)
 
@@ -96,7 +96,6 @@ def evaluate(_model_path, split, batch_size=1, labeled=False):
                 predictions = gen_logits_to_indice(outputs.cpu().numpy(), processor, options)
 
             predictions = [int(i + 1) for i in predictions]
-            answers = [int(i + 1) for i in answers]
 
             image_names.extend(image_batch_names)
             all_predictions.extend(predictions)
