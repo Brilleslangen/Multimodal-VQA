@@ -9,4 +9,6 @@ In this final project of the course *Multimodal Intelligent System Desing* at Th
  + Multi-class classification
  + Natural language inference using SWAG-based data decomposition
 
-Additionally, for the latter two approaches, we also assess two distinct pooling strategies for intermediate feature extraction from the final hidden state and the linear output layer of our non-generative approaches - attentive vs. last-token pooling.  
+Additionally, for the latter two approaches, we also assess two distinct pooling strategies for intermediate feature extraction from the final hidden state and the linear output layer of our non-generative approaches - attentive vs. last-token pooling.
+
+Link: [Final report written by Nicolai](https://github.com/Brilleslangen/Multimodal-VQA/blob/main/Multimodal%20ISD%20Final%20Project%20(1).pdf)
